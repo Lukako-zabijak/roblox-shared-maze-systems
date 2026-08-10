@@ -14,6 +14,8 @@ local goal = maze:WaitForChild("GoalPad") :: BasePart
 local world_changed_event = ss:WaitForChild("maze_world_changed") :: BindableEvent
 local spawn_location = workspace:FindFirstChildOfClass("SpawnLocation")
 
+-- debris uses its own collision group so pieces can collide with the maze without
+-- repeatedly colliding with one another and creating unstable physics clusters.
 local random = Random.new()
 local collapse_collision_group = "maze_collapse_debris"
 pcall(function()
@@ -41,11 +43,15 @@ local debris_folder = Instance.new("Folder")
 debris_folder.Name = "maze_collapse_debris"
 debris_folder.Parent = workspace
 
+-- wall selection only needs horizontal distance because height differences do not
+-- affect whether two collapses are too close together on the maze grid.
 local function planar_distance(left: Vector3, right: Vector3): number
 	local difference = left - right
 	return Vector2.new(difference.X, difference.Z).Magnitude
 end
 
+-- candidates must be structural interior walls. boundary, spawn, and goal exclusions
+-- preserve the playable enclosure and prevent a collapse from invalidating key areas.
 local function collect_candidates(): {BasePart}
 	local candidates: {BasePart} = {}
 	local half_floor = maze_floor.Size * 0.5
@@ -71,6 +77,7 @@ local function collect_candidates(): {BasePart}
 		end
 	end
 
+	-- fisher-yates randomizes the candidate order without bias before spacing is applied.
 	for index = #candidates, 2, -1 do
 		local swap_index = random:NextInteger(1, index)
 		candidates[index], candidates[swap_index] = candidates[swap_index], candidates[index]
@@ -78,6 +85,8 @@ local function collect_candidates(): {BasePart}
 	return candidates
 end
 
+-- the first pass favors wide distribution. the second pass relaxes spacing only when
+-- the maze cannot supply the requested count, while still avoiding adjacent collapses.
 local function choose_walls(candidates: {BasePart}): {BasePart}
 	local selected: {BasePart} = {}
 
@@ -110,6 +119,8 @@ local function choose_walls(candidates: {BasePart}): {BasePart}
 	return selected
 end
 
+-- both an always-visible highlight and a floor marker are used so the warning remains
+-- readable when the wall is occluded or outside the player's direct viewing angle.
 local function create_warning_marker(wall: BasePart): (Highlight, BasePart)
 	local highlight = Instance.new("Highlight")
 	highlight.Name = "collapse_warning"
@@ -142,6 +153,8 @@ local function create_warning_marker(wall: BasePart): (Highlight, BasePart)
 	return highlight, marker
 end
 
+-- warnings complete before physics begins. checking parent throughout the yielded
+-- tween sequence prevents work from continuing if another system removes the wall.
 local function warn_wall(wall: BasePart): boolean
 	if not wall.Parent then
 		return false
@@ -196,6 +209,8 @@ local function warn_wall(wall: BasePart): boolean
 	return wall.Parent ~= nil
 end
 
+-- small fragments are temporary visual detail. only a bounded portion can collide,
+-- which keeps the effect readable without making every fragment a physics obstacle.
 local function spawn_small_debris(wall: BasePart, amount: number)
 	for index = 1, amount do
 		local fragment = Instance.new("Part")
@@ -234,6 +249,8 @@ local function spawn_small_debris(wall: BasePart, amount: number)
 	end
 end
 
+-- large chunks remain usable obstacles briefly, then lose collision before fading so
+-- players and agents cannot become trapped by debris that is already disappearing.
 local function schedule_chunk_cleanup(chunk: BasePart)
 	task.delay(chunk_cleanup_delay + random:NextNumber(0, 1.2), function()
 		if not chunk.Parent then
@@ -252,6 +269,8 @@ local function schedule_chunk_cleanup(chunk: BasePart)
 	end)
 end
 
+-- cloning the original wall preserves its material and appearance. a fixed three by
+-- two by two partition produces twelve predictable chunks for layered destruction.
 local function build_chunks(wall: BasePart): ({{BasePart}}, {BasePart})
 	local layers: {{BasePart}} = table.create(3)
 	local all_chunks: {BasePart} = {}
@@ -292,6 +311,8 @@ local function build_chunks(wall: BasePart): ({{BasePart}}, {BasePart})
 	return layers, all_chunks
 end
 
+-- landing is derived from the chunk's rotated vertical extent rather than its center.
+-- anchoring settled chunks removes ongoing solver cost and gives debris a stable pose.
 local function monitor_chunk_landing(chunk: BasePart)
 	local floor_top = maze_floor.Position.Y + maze_floor.Size.Y * 0.5
 	local started_at = os.clock()
@@ -338,6 +359,8 @@ local function monitor_chunk_landing(chunk: BasePart)
 	end)
 end
 
+-- layers are released separately to make the wall fail progressively. server network
+-- ownership keeps the authoritative collapse consistent for every connected client.
 local function release_layer(wall: BasePart, layer: {BasePart}, layer_index: number)
 	for _, chunk in layer do
 		local offset = chunk.Position - wall.Position
@@ -368,6 +391,8 @@ local function release_layer(wall: BasePart, layer: {BasePart}, layer_index: num
 	spawn_small_debris(wall, 6)
 end
 
+-- the count is calculated when the notification is sent so it reflects the current
+-- simulation rather than the number of agents that existed during initialization.
 local function current_agent_count(): number
 	local count = 0
 	for _, child in agents_folder:GetChildren() do
@@ -378,6 +403,8 @@ local function current_agent_count(): number
 	return count
 end
 
+-- this is the collapse transaction: warn, replace the wall with chunks, notify pathing,
+-- release debris, remove the original, and announce when the new route becomes usable.
 local function collapse_wall(wall: BasePart)
 	if not warn_wall(wall) then
 		return
@@ -418,6 +445,8 @@ local function collapse_wall(wall: BasePart)
 	end)
 end
 
+-- selection happens once so every wall has a stable collapse order that can also be
+-- inspected through attributes while the staggered sequence is running.
 local candidates = collect_candidates()
 local selected_walls = choose_walls(candidates)
 debris_folder:SetAttribute("CandidateCount", #candidates)
