@@ -1,17 +1,17 @@
 -- Made by LukakoZabijak (lukakozabijak) on discord, killerox3905 on Roblox.
 --!strict
 
-local ds = game:GetService("Debris")
-local ps = game:GetService("PhysicsService")
-local rs = game:GetService("RunService")
-local ss = game:GetService("ServerStorage")
-local ts = game:GetService("TweenService")
+local debris_service = game:GetService("Debris")
+local physics_service = game:GetService("PhysicsService")
+local run_service = game:GetService("RunService")
+local server_storage = game:GetService("ServerStorage")
+local tween_service = game:GetService("TweenService")
 
 local maze = workspace:WaitForChild("Maze")
 local agents_folder = workspace:WaitForChild("MazeAgents")
 local maze_floor = maze:WaitForChild("MazeFloor") :: BasePart
 local goal = maze:WaitForChild("GoalPad") :: BasePart
-local world_changed_event = ss:WaitForChild("maze_world_changed") :: BindableEvent
+local world_changed_event = server_storage:WaitForChild("maze_world_changed") :: BindableEvent
 local spawn_location = workspace:FindFirstChildOfClass("SpawnLocation")
 
 -- debris uses its own collision group so pieces can collide with the maze without
@@ -19,9 +19,17 @@ local spawn_location = workspace:FindFirstChildOfClass("SpawnLocation")
 local random = Random.new()
 local collapse_collision_group = "maze_collapse_debris"
 pcall(function()
-	ps:RegisterCollisionGroup(collapse_collision_group)
+	-- registration can fail when a previous run already created the group, but that
+	-- existing group is still valid and should be reused.
+	physics_service:RegisterCollisionGroup(collapse_collision_group)
 end)
-ps:CollisionGroupSetCollidable(collapse_collision_group, collapse_collision_group, false)
+-- disabling debris-to-debris collision prevents twelve chunks from repeatedly
+-- striking each other while they are released from the same wall volume.
+physics_service:CollisionGroupSetCollidable(
+	collapse_collision_group,
+	collapse_collision_group,
+	false
+)
 
 local collapse_count = 8
 local minimum_wall_spacing = 48
@@ -36,6 +44,8 @@ local spawn_exclusion_radius = 28
 
 local old_debris_folder = workspace:FindFirstChild("maze_collapse_debris")
 if old_debris_folder then
+	-- studio test sessions can leave generated debris behind, so stale state must not
+	-- be counted or simulated by the next controller run.
 	old_debris_folder:Destroy()
 end
 
@@ -64,9 +74,12 @@ local function collect_candidates(): {BasePart}
 			and child.Size.Y >= 8
 			and child.Size.X >= 4
 			and child.Size.Z >= 4 then
+			-- object space keeps the boundary test correct even if the whole maze is rotated.
 			local local_position = maze_floor.CFrame:PointToObjectSpace(child.Position)
 			local is_interior = math.abs(local_position.X) <= half_floor.X - boundary_margin
 				and math.abs(local_position.Z) <= half_floor.Z - boundary_margin
+			-- opening a wall beside the objective or spawn could create an unintended
+			-- shortcut or place falling debris where players enter the experience.
 			local far_from_goal = planar_distance(child.Position, goal.Position) >= goal_exclusion_radius
 			local far_from_spawn = not spawn_location
 				or planar_distance(child.Position, spawn_location.Position) >= spawn_exclusion_radius
@@ -99,6 +112,8 @@ local function choose_walls(candidates: {BasePart}): {BasePart}
 		return true
 	end
 
+	-- if strict spacing cannot provide eight walls, a smaller lower bound is preferable
+	-- to silently omitting most of the scheduled structural events.
 	for _, candidate in candidates do
 		if is_spaced(candidate, minimum_wall_spacing) then
 			table.insert(selected, candidate)
@@ -135,6 +150,8 @@ local function create_warning_marker(wall: BasePart): (Highlight, BasePart)
 	local marker = Instance.new("Part")
 	marker.Name = "collapse_warning"
 	marker.Size = Vector3.new(wall.Size.X * 1.18, 0.08, wall.Size.Z * 1.18)
+	-- the marker is placed from the floor's top surface instead of the wall's bottom,
+	-- ensuring it stays visible when wall pivots or heights differ.
 	marker.CFrame = CFrame.new(
 		wall.Position.X,
 		maze_floor.Position.Y + maze_floor.Size.Y * 0.5 + 0.05,
@@ -170,31 +187,33 @@ local function warn_wall(wall: BasePart): boolean
 	local highlight, marker = create_warning_marker(wall)
 	for _ = 1, warning_pulses do
 		if not wall.Parent then
+			-- every tween yields, so the wall may have been removed since the last check.
 			highlight:Destroy()
 			marker:Destroy()
 			return false
 		end
 
-		local brighten_highlight = ts:Create(
+		local brighten_highlight = tween_service:Create(
 			highlight,
 			TweenInfo.new(0.22, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
 			{FillTransparency = 0.38, OutlineTransparency = 0}
 		)
-		local brighten_marker = ts:Create(
+		local brighten_marker = tween_service:Create(
 			marker,
 			TweenInfo.new(0.22, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
 			{Transparency = 0.12}
 		)
 		brighten_highlight:Play()
 		brighten_marker:Play()
+		-- waiting on one tween keeps both warning visuals in the same pulse phase.
 		brighten_marker.Completed:Wait()
 
-		local dim_highlight = ts:Create(
+		local dim_highlight = tween_service:Create(
 			highlight,
 			TweenInfo.new(0.26, Enum.EasingStyle.Sine, Enum.EasingDirection.In),
 			{FillTransparency = 0.82, OutlineTransparency = 0.32}
 		)
-		local dim_marker = ts:Create(
+		local dim_marker = tween_service:Create(
 			marker,
 			TweenInfo.new(0.26, Enum.EasingStyle.Sine, Enum.EasingDirection.In),
 			{Transparency = 0.62}
@@ -223,6 +242,8 @@ local function spawn_small_debris(wall: BasePart, amount: number)
 			random:NextNumber(-wall.Size.Z * 0.48, wall.Size.Z * 0.48)
 		)
 		fragment.Anchored = false
+		-- only forty percent become obstacles; the rest are visual detail that cannot
+		-- multiply contact calculations or block the newly opened route.
 		local is_collidable = index <= math.ceil(amount * 0.4)
 		fragment.CanCollide = is_collidable
 		fragment.CanQuery = is_collidable
@@ -233,6 +254,7 @@ local function spawn_small_debris(wall: BasePart, amount: number)
 		fragment.CustomPhysicalProperties = PhysicalProperties.new(1.8, 0.65, 0.05, 100, 20)
 		fragment.Parent = debris_folder
 		pcall(function()
+			-- server ownership makes the authoritative collapse identical for all clients.
 			fragment:SetNetworkOwner(nil)
 		end)
 		fragment.AssemblyLinearVelocity = Vector3.new(
@@ -245,7 +267,8 @@ local function spawn_small_debris(wall: BasePart, amount: number)
 			random:NextNumber(-8, 8),
 			random:NextNumber(-8, 8)
 		)
-		ds:AddItem(fragment, random:NextNumber(3.5, 5))
+		-- randomized lifetimes prevent every fragment from disappearing on one frame.
+		debris_service:AddItem(fragment, random:NextNumber(3.5, 5))
 	end
 end
 
@@ -254,18 +277,19 @@ end
 local function schedule_chunk_cleanup(chunk: BasePart)
 	task.delay(chunk_cleanup_delay + random:NextNumber(0, 1.2), function()
 		if not chunk.Parent then
+			-- debris may be removed by a reset before this delayed callback resumes.
 			return
 		end
 		chunk.CanCollide = false
 		chunk.CanQuery = false
 		chunk.CanTouch = false
-		local fade = ts:Create(
+		local fade = tween_service:Create(
 			chunk,
 			TweenInfo.new(0.65, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 			{Transparency = 1}
 		)
 		fade:Play()
-		ds:AddItem(chunk, 0.75)
+		debris_service:AddItem(chunk, 0.75)
 	end)
 end
 
@@ -274,6 +298,8 @@ end
 local function build_chunks(wall: BasePart): ({{BasePart}}, {BasePart})
 	local layers: {{BasePart}} = table.create(3)
 	local all_chunks: {BasePart} = {}
+	-- the small subtraction leaves a visible seam and prevents cloned chunks from
+	-- starting in overlapping contact with one another.
 	local chunk_size = Vector3.new(
 		math.max(0.5, wall.Size.X / 2 - 0.08),
 		math.max(0.5, wall.Size.Y / 3 - 0.08),
@@ -289,6 +315,7 @@ local function build_chunks(wall: BasePart): ({{BasePart}}, {BasePart})
 				chunk:ClearAllChildren()
 				chunk.Name = string.lower(wall.Name) .. "_chunk"
 				chunk.Size = chunk_size
+				-- subtracting 1.5 centers the two horizontal indices around the wall pivot.
 				local x_offset = (x_index - 1.5) * (wall.Size.X / 2)
 				local y_offset = (y_index - 2) * (wall.Size.Y / 3)
 				local z_offset = (z_index - 1.5) * (wall.Size.Z / 2)
@@ -322,12 +349,16 @@ local function monitor_chunk_landing(chunk: BasePart)
 			local right = chunk.CFrame.RightVector
 			local up = chunk.CFrame.UpVector
 			local look = chunk.CFrame.LookVector
+			-- projecting all three local axes onto world y finds the true lowest point
+			-- while the chunk is tumbling; size.y alone only works when it is upright.
 			local vertical_half_extent = (
 				math.abs(right.Y) * chunk.Size.X
 				+ math.abs(up.Y) * chunk.Size.Y
 				+ math.abs(look.Y) * chunk.Size.Z
 			) * 0.5
 			local lowest_point = chunk.Position.Y - vertical_half_extent
+			-- the short grace period prevents a newly released chunk from being marked
+			-- landed before physics has advanced it away from its starting position.
 			local has_fallen = os.clock() - started_at >= 0.05
 
 			if has_fallen
@@ -338,6 +369,8 @@ local function monitor_chunk_landing(chunk: BasePart)
 				local rest_rotation: CFrame
 				local rest_height: number
 
+				-- rest the chunk on its longest horizontal side to avoid an implausible
+				-- upright pose and reduce the chance that it tips after being anchored.
 				if chunk.Size.X >= chunk.Size.Z then
 					rest_rotation = CFrame.Angles(0, yaw, 0) * CFrame.Angles(0, 0, math.rad(90))
 					rest_height = chunk.Size.X * 0.5
@@ -346,7 +379,11 @@ local function monitor_chunk_landing(chunk: BasePart)
 					rest_height = chunk.Size.Z * 0.5
 				end
 
-				chunk.CFrame = CFrame.new(position.X, floor_top + rest_height + 0.04, position.Z) * rest_rotation
+				chunk.CFrame = CFrame.new(
+					position.X,
+					floor_top + rest_height + 0.04,
+					position.Z
+				) * rest_rotation
 				chunk.AssemblyLinearVelocity = Vector3.zero
 				chunk.AssemblyAngularVelocity = Vector3.zero
 				chunk.Anchored = true
@@ -354,7 +391,7 @@ local function monitor_chunk_landing(chunk: BasePart)
 				chunk:SetAttribute("LandingY", chunk.Position.Y)
 				return
 			end
-			rs.Heartbeat:Wait()
+			run_service.Heartbeat:Wait()
 		end
 	end)
 end
@@ -369,12 +406,16 @@ local function release_layer(wall: BasePart, layer: {BasePart}, layer_index: num
 			outward = wall.CFrame.RightVector
 		end
 		outward = outward.Unit
+		-- a small perpendicular component stops all chunks from following identical
+		-- radial paths while preserving the overall outward collapse direction.
 		local tangent = Vector3.new(-outward.Z, 0, outward.X) * random:NextNumber(-0.3, 0.3)
 		local release_direction = (outward + tangent).Unit
 		local downward_speed = random:NextNumber(1, 4) + (3 - layer_index) * 0.5
 
 		chunk.Anchored = false
 		pcall(function()
+			-- the server owns gameplay debris because clients must not disagree about
+			-- whether the newly opened route is physically blocked.
 			chunk:SetNetworkOwner(nil)
 		end)
 		chunk.AssemblyLinearVelocity = release_direction * random:NextNumber(11, 18)
@@ -412,6 +453,8 @@ local function collapse_wall(wall: BasePart)
 
 	wall:SetAttribute("CollapseState", "falling")
 	local layers, all_chunks = build_chunks(wall)
+	-- disable the original wall before notifying pathfinding so the route query sees
+	-- the same open geometry described by the structural-change event.
 	wall.Transparency = 1
 	wall.CanCollide = false
 	wall.CanQuery = false
@@ -424,6 +467,7 @@ local function collapse_wall(wall: BasePart)
 			current_agent_count()
 		),
 		"collapse",
+		-- true tells the agent controller to clear stale memory and compute new paths.
 		true
 	)
 
@@ -435,7 +479,8 @@ local function collapse_wall(wall: BasePart)
 	local collapsed_name = string.lower(wall.Name)
 	wall:Destroy()
 	debris_folder:SetAttribute("LastCollapsedChunkCount", #all_chunks)
-	debris_folder:SetAttribute("CollapsedWalls", (debris_folder:GetAttribute("CollapsedWalls") or 0) + 1)
+	local collapsed_wall_count = debris_folder:GetAttribute("CollapsedWalls") or 0
+	debris_folder:SetAttribute("CollapsedWalls", collapsed_wall_count + 1)
 	task.delay(chunk_cleanup_delay + 1.4, function()
 		world_changed_event:Fire(
 			string.format("%s debris cleared - the new opening is usable", collapsed_name),
@@ -465,6 +510,8 @@ for index, wall in selected_walls do
 		collapse_wall(wall)
 	end
 	if index < #selected_walls then
+		-- random spacing avoids a predictable cadence and guarantees only one wall is
+		-- performing its warning and chunk release sequence at a time.
 		task.wait(random:NextNumber(minimum_collapse_interval, maximum_collapse_interval))
 	end
 end
