@@ -1,17 +1,17 @@
 -- Made by LukakoZabijak (lukakozabijak) on discord, killerox3905 on Roblox.
 --!strict
 
-local debris_service = game:GetService("Debris")
-local physics_service = game:GetService("PhysicsService")
-local run_service = game:GetService("RunService")
-local server_storage = game:GetService("ServerStorage")
-local tween_service = game:GetService("TweenService")
+local ds = game:GetService("Debris")
+local ps = game:GetService("PhysicsService")
+local rs = game:GetService("RunService")
+local ss = game:GetService("ServerStorage")
+local ts = game:GetService("TweenService")
 
 local maze = workspace:WaitForChild("Maze")
 local agents_folder = workspace:WaitForChild("MazeAgents")
 local maze_floor = maze:WaitForChild("MazeFloor") :: BasePart
 local goal = maze:WaitForChild("GoalPad") :: BasePart
-local world_changed_event = server_storage:WaitForChild("maze_world_changed") :: BindableEvent
+local world_changed_event = ss:WaitForChild("maze_world_changed") :: BindableEvent
 local spawn_location = workspace:FindFirstChildOfClass("SpawnLocation")
 
 -- debris uses its own collision group so pieces can collide with the maze without
@@ -21,11 +21,11 @@ local collapse_collision_group = "maze_collapse_debris"
 pcall(function()
 	-- registration can fail when a previous run already created the group, but that
 	-- existing group is still valid and should be reused.
-	physics_service:RegisterCollisionGroup(collapse_collision_group)
+	ps:RegisterCollisionGroup(collapse_collision_group)
 end)
 -- disabling debris-to-debris collision prevents twelve chunks from repeatedly
 -- striking each other while they are released from the same wall volume.
-physics_service:CollisionGroupSetCollidable(
+ps:CollisionGroupSetCollidable(
 	collapse_collision_group,
 	collapse_collision_group,
 	false
@@ -193,12 +193,12 @@ local function warn_wall(wall: BasePart): boolean
 			return false
 		end
 
-		local brighten_highlight = tween_service:Create(
+		local brighten_highlight = ts:Create(
 			highlight,
 			TweenInfo.new(0.22, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
 			{FillTransparency = 0.38, OutlineTransparency = 0}
 		)
-		local brighten_marker = tween_service:Create(
+		local brighten_marker = ts:Create(
 			marker,
 			TweenInfo.new(0.22, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
 			{Transparency = 0.12}
@@ -208,12 +208,12 @@ local function warn_wall(wall: BasePart): boolean
 		-- waiting on one tween keeps both warning visuals in the same pulse phase.
 		brighten_marker.Completed:Wait()
 
-		local dim_highlight = tween_service:Create(
+		local dim_highlight = ts:Create(
 			highlight,
 			TweenInfo.new(0.26, Enum.EasingStyle.Sine, Enum.EasingDirection.In),
 			{FillTransparency = 0.82, OutlineTransparency = 0.32}
 		)
-		local dim_marker = tween_service:Create(
+		local dim_marker = ts:Create(
 			marker,
 			TweenInfo.new(0.26, Enum.EasingStyle.Sine, Enum.EasingDirection.In),
 			{Transparency = 0.62}
@@ -268,7 +268,7 @@ local function spawn_small_debris(wall: BasePart, amount: number)
 			random:NextNumber(-8, 8)
 		)
 		-- randomized lifetimes prevent every fragment from disappearing on one frame.
-		debris_service:AddItem(fragment, random:NextNumber(3.5, 5))
+		ds:AddItem(fragment, random:NextNumber(3.5, 5))
 	end
 end
 
@@ -283,13 +283,13 @@ local function schedule_chunk_cleanup(chunk: BasePart)
 		chunk.CanCollide = false
 		chunk.CanQuery = false
 		chunk.CanTouch = false
-		local fade = tween_service:Create(
+		local fade = ts:Create(
 			chunk,
 			TweenInfo.new(0.65, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 			{Transparency = 1}
 		)
 		fade:Play()
-		debris_service:AddItem(chunk, 0.75)
+		ds:AddItem(chunk, 0.75)
 	end)
 end
 
@@ -391,7 +391,7 @@ local function monitor_chunk_landing(chunk: BasePart)
 				chunk:SetAttribute("LandingY", chunk.Position.Y)
 				return
 			end
-			run_service.Heartbeat:Wait()
+			rs.Heartbeat:Wait()
 		end
 	end)
 end
