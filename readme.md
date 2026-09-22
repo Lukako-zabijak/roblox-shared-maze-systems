@@ -6,7 +6,7 @@
 
 ## start here
 
-The main example is **MazeAgentController (Server).luau** — one 794-line script with 670 nonblank, noncomment code lines
+The main example is **MazeAgentController (Server).luau** — one 878-line script with 730 nonblank, noncomment code lines
 It contains the grid search, shared map, replanning, movement recovery and collapse-event handling
 The other files support the authored rigs, wall physics, HUD and camera
 
@@ -14,7 +14,7 @@ For a direct code-file link, use [MazeAgentController on GitHub](https://github.
 
 ## watch the demonstration
 
-Join a fresh server on desktop — the camera starts above the first example when its wall is present
+Join on desktop — the camera frames the first example even if its wall has already collapsed
 
 1. **A discovery is shared** — Maze Dummy 04 finds a wall, and Maze Dummy 02 changes its planned route before reaching the blockage
 2. **The wall collapses** — the runner pauses while the marked wall flashes orange and breaks into physical debris
@@ -22,9 +22,13 @@ Join a fresh server on desktop — the camera starts above the first example whe
 4. **The runner takes the shortcut** — in the recorded Studio run, the remaining route fell from **31 grid moves to 19**, and the runner crossed the opened passage
 5. **The full maze continues** — the other agents head toward the goal while the remaining selected walls collapse
 
-The first three agents start about five seconds after server initialization; the background agents start later
-The opening sequence runs **once per server**, so joining late or rejoining the same server will not replay it
-There is no manual replay button
+The first run waits until a viewer's HUD is ready, then gives the first three agents a five-second countdown
+The background agents start later
+
+**The demonstration repeats automatically** after the full run and a 15-second pause
+The changed walls, agent positions and shared navigation knowledge are restored for the next cycle
+If you arrive halfway through, the HUD loads the current demo status and you can watch the next cycle without changing servers
+A run has a 240-second completion deadline after startup so a stuck agent cannot prevent replay indefinitely
 
 The first wall, starting positions and pause are staged so the interaction is visible
 Routes are still calculated by the planner at runtime, and the completion event requires an actual crossing rather than just a changed route or HUD message
@@ -57,7 +61,9 @@ The current viewing controls are built for keyboard and mouse
 
 Navigation decisions and physical changes stay on the server
 `ServerStorage.maze_world_changed` is a BindableEvent from the collapse controller to the navigation controller
-`ReplicatedStorage.maze_knowledge_event` sends display messages to clients
+`ReplicatedStorage.maze_knowledge_event` sends ordinary display messages to clients and accepts only a one-time viewer-ready action from each player
+Important demo messages are also stored in a single replicated `demosnapshot` attribute so a late viewer can read the current state
+The ready action cannot supply routes, declare discoveries or request a restart
 
 The rig setup reads the authored maze to select reachable spawn positions, but does not copy that map into the navigation system
 The colored raycast probes show direction and clearance; body-space overlap queries provide the grid's obstacle observations
@@ -66,15 +72,15 @@ The colored raycast probes show direction and clearance; body-space overlap quer
 
 | Start at | Topic |
 | --- | --- |
-| [Line 13](ServerScriptService/MazeAgentController%20%28Server%29.luau#L13) | Grid coordinates, bounds and neighbors |
-| [Line 50](ServerScriptService/MazeAgentController%20%28Server%29.luau#L50) | Binary heap operations |
-| [Line 116](ServerScriptService/MazeAgentController%20%28Server%29.luau#L116) | A* search and unknown-cell costs |
-| [Line 262](ServerScriptService/MazeAgentController%20%28Server%29.luau#L262) | Publishing shared discoveries |
-| [Line 356](ServerScriptService/MazeAgentController%20%28Server%29.luau#L356) | Route comparisons and demonstration evidence |
-| [Line 455](ServerScriptService/MazeAgentController%20%28Server%29.luau#L455) | Movement recovery and crossing checks |
-| [Line 598](ServerScriptService/MazeAgentController%20%28Server%29.luau#L598) | Rotated debris footprints |
-| [Line 651](ServerScriptService/MazeAgentController%20%28Server%29.luau#L651) | Collapse-event validation |
-| [Line 724](ServerScriptService/MazeAgentController%20%28Server%29.luau#L724) | Cleanup and scheduling |
+| [Line 14](ServerScriptService/MazeAgentController%20%28Server%29.luau#L14) | Grid coordinates, bounds and neighbors |
+| [Line 51](ServerScriptService/MazeAgentController%20%28Server%29.luau#L51) | Binary heap operations |
+| [Line 122](ServerScriptService/MazeAgentController%20%28Server%29.luau#L122) | A* search and unknown-cell costs |
+| [Line 283](ServerScriptService/MazeAgentController%20%28Server%29.luau#L283) | Publishing shared discoveries |
+| [Line 377](ServerScriptService/MazeAgentController%20%28Server%29.luau#L377) | Route comparisons and demonstration evidence |
+| [Line 476](ServerScriptService/MazeAgentController%20%28Server%29.luau#L476) | Movement recovery and crossing checks |
+| [Line 620](ServerScriptService/MazeAgentController%20%28Server%29.luau#L620) | Rotated debris footprints |
+| [Line 675](ServerScriptService/MazeAgentController%20%28Server%29.luau#L675) | Collapse-event validation |
+| [Line 748](ServerScriptService/MazeAgentController%20%28Server%29.luau#L748) | Cleanup and scheduling |
 
 [The walkthrough](docs/navigation.md) explains the reasoning, state transitions and tradeoffs in more detail
 
@@ -106,17 +112,21 @@ Release checked on 22 September 2026, with recorded Studio results from developm
 | Full Studio run | All 15 agents arrived; all eight selected collapses completed |
 | Shortcut witness in Studio | Maze Dummy 02 crossed cell 1262 from cell 1221 to cell 1303 after its remaining route changed from 31 moves to 19 |
 | Source release | All five GitHub scripts matched the Studio sources used for the release |
-| Published client | The place loaded, with agents, the HUD, shared-information updates and collapse messages observed |
+| Delayed viewer readiness | All 15 agents stayed queued until the HUD was enabled and acknowledged |
+| Late component initialization | Remounted HUD restored the current snapshot; remounted camera framed the example after its wall was gone |
+| Automatic replay | A natural second cycle finished with 15 arrivals, eight collapses and the same 31-to-19 shortcut |
+| Reset guards | Duplicate ready messages did not reset the run; duplicate and wrong-owner reset events were rejected |
 
 The 909 total is a count of assertions/checks, not 909 independent scenarios
-The exact shortcut measurement and all-agent completion were verified in Studio, not independently measured in the published client
+The current release was exercised in Studio; its full sequence has not been independently measured in the published client
+Remounting client components checks delayed initialization, not a separate multiplayer connection
 The temporary test fixtures are not part of this source-only repository, so the table reports recorded results rather than an included one-command test suite
 
 ## scope
 
 The system targets this flat maze with eight-stud tiles and the existing rigs
 It has been exercised with 15 agents; large crowds, multiplayer load and mobile viewing controls have not been validated
-Shared knowledge lasts for the current server run and is not saved between sessions
+Shared knowledge is reset for each demonstration cycle and is not saved between sessions
 
 ## credit
 

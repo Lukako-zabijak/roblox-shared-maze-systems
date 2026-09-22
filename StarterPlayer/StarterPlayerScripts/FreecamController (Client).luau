@@ -344,10 +344,20 @@ script:SetAttribute("active", false)
 script:SetAttribute("speed", current_speed)
 
 
--- start over the demonstration so the first discovery is visible, f3 still returns to the player
-local maze = workspace:WaitForChild("Maze", 10)
-local wall = if maze then maze:WaitForChild("Wall_32_31", 5) else nil
-if wall and wall:IsA("BasePart") then
-	local position = wall.Position
+-- the saved focus outlives the wall, so a late join still opens on the demonstration
+local agents = workspace:WaitForChild("MazeAgents")
+local focusconnection: RBXScriptConnection? = nil
+local framed = false
+local function frameexample()
+	if framed then return end
+	local position = agents:GetAttribute("demofocus")
+	if typeof(position) ~= "Vector3" then return end
+	framed = true
 	enable_freecam(CFrame.lookAt(position + Vector3.new(-8, 76, 12), position + Vector3.new(-8, -8, -6)))
+	if focusconnection then focusconnection:Disconnect() end
 end
+focusconnection = agents:GetAttributeChangedSignal("demofocus"):Connect(frameexample)
+frameexample()
+script.Destroying:Connect(function()
+	if focusconnection then focusconnection:Disconnect() end
+end)

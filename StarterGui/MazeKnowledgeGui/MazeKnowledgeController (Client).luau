@@ -4,6 +4,8 @@
 -- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
 local replicated_storage = game:GetService("ReplicatedStorage")
 local tween_service = game:GetService("TweenService")
+local httpservice = game:GetService("HttpService")
+local agents = workspace:WaitForChild("MazeAgents")
 
 local screen_gui = script.Parent :: ScreenGui
 local title = screen_gui:WaitForChild("title") :: TextLabel
@@ -98,7 +100,7 @@ local function queue_message(message: string, kind: string, priority: boolean?)
 end
 -- watermark:5/6:206b696c6c65726f78333930
 
-knowledge_event.OnClientEvent:Connect(function(payload)
+local messages = knowledge_event.OnClientEvent:Connect(function(payload)
 	if typeof(payload) ~= "table" then
 		return
 	end
@@ -114,6 +116,28 @@ knowledge_event.OnClientEvent:Connect(function(payload)
 end)
 -- watermark:6/6:35206f6e20526f626c6f782e
 
+local lastserial = -1
+local function readsnapshot()
+	local encoded = agents:GetAttribute("demosnapshot")
+	if typeof(encoded) ~= "string" or #encoded > 1024 then return end
+	local ok, payload = pcall(httpservice.JSONDecode, httpservice, encoded)
+	if not ok or typeof(payload) ~= "table" then return end
+	if typeof(payload.serial) ~= "number" or payload.serial <= lastserial then return end
+	if typeof(payload.message) ~= "string" or #payload.message > 140 or typeof(payload.kind) ~= "string" then return end
+	lastserial = payload.serial
+	-- subscribing before the first read covers both a late join and a change during startup
+	queue_message(payload.message, payload.kind, true)
+end
+local snapshots = agents:GetAttributeChangedSignal("demosnapshot"):Connect(readsnapshot)
+readsnapshot()
+screen_gui.Destroying:Connect(function()
+	revision += 1
+	table.clear(message_queue)
+	if activefade then activefade:Cancel() end
+	messages:Disconnect()
+	snapshots:Disconnect()
+end)
+
 task.spawn(function()
 	type_text(title, "one learns. all know.", 0.045)
 	task.wait(0.25)
@@ -122,6 +146,12 @@ task.spawn(function()
 	legend.RichText = true
 	legend.Text = '<font color="#37ff78">green</font> = best route    <font color="#ff3e48">red</font> = avoid    <font color="#35d9ff">cyan</font> = shared info    <font color="#ffbe48">orange</font> = collapse warning'
 	task.wait(0.35)
-	queue_message("dummies share discoveries and structural changes in real time", "shared")
+	-- listeners and labels are ready now, this message cannot request routes or restart a run
+	local player = game:GetService("Players").LocalPlayer
+	-- retry until this player is acknowledged in case the first message preceded server setup
+	while screen_gui.Parent and not player:GetAttribute("mazeviewerready") do
+		knowledge_event:FireServer("ready")
+		task.wait(1)
+	end
 end)
 

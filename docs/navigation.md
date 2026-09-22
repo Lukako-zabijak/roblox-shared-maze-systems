@@ -1,8 +1,8 @@
 # Navigation walkthrough
 
-Source: [exact reviewed main script](https://github.com/Lukako-zabijak/roblox-shared-maze-systems/blob/29dc850a120e501d6ea5b2b6a45af2c56e4d5aaf/ServerScriptService/MazeAgentController%20%28Server%29.luau)
+Source: [main navigation script](../ServerScriptService/MazeAgentController%20%28Server%29.luau)
 
-Line references below belong to that commit. The navigation source is unchanged in the documentation update.
+Line references below match the submission overhaul
 
 ## Overview
 
@@ -18,20 +18,20 @@ Line references below belong to that commit. The navigation source is unchanged 
 
 | Main script lines | Read for | Main point to explain |
 | --- | --- | --- |
-| 9–48 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
-| 50–84 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
-| 88–98 | Discovery and revision | Repeating the same observation does not invalidate routes again |
-| 100–164 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
-| 167–241 | Roblox adapter | Convert between floor-relative cells and world positions |
-| 246–328 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
-| 356–451 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
-| 455–583 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
-| 585–721 | Debris and collapse events | Check physical clearance, event order and current-run identity |
-| 724–794 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
+| 14-49 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
+| 51-91 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
+| 94-104 | Discovery and revision | Repeating the same observation does not invalidate routes again |
+| 107-174 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
+| 177-281 | Roblox adapter | Convert between floor-relative cells and world positions |
+| 283-375 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
+| 377-473 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
+| 476-606 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
+| 608-746 | Debris and collapse events | Check physical clearance, event order and current-run identity |
+| 748-878 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
 
 ## 1. How the map represents knowledge
 
-`map.cells` has three useful meanings: no entry means unknown, an entry with `blocked = false` means checked clear, and `blocked = true` means blocked. Every agent's plan reads the same table. They do not exchange separate copies of an entire map, and there is no cross-server memory.
+`map.cells` has three useful meanings: no entry means unknown, an entry with `blocked = false` means checked clear, and `blocked = true` means blocked. Every agent's plan reads the same table. They do not exchange separate copies of an entire map, and there is no cross-server memory. Each replay starts with fresh navigation knowledge.
 
 `discover` only increments the revision when a cell's known state changes. `publish` then checks which agents are affected and marks their plans dirty. The revision is an observation counter; it is not a separate pathfinding algorithm.
 
@@ -111,4 +111,18 @@ The controller updates at a configured interval of 0.16 seconds and permits at m
 
 Nesting is how many control blocks a reader must stay inside at once. The main script uses early returns and `continue` for invalid or irrelevant cases, then keeps the useful path at a shallower indentation level. Arrival checks, recovery, route comparison and event validation have named functions with separate responsibilities.
 
-Examples to point to are `publish` at line 262, `maintainmove` at line 492, `update` at line 546 and `worldchanged` at line 651. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
+Examples to point to are `publish` at line 283, `maintainmove` at line 513, `update` at line 568 and `worldchanged` at line 675. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
+
+## 9. Viewer readiness and repeatable demonstrations
+
+The HUD subscribes to `demosnapshot` before reading its current value. That single JSON attribute carries a message, kind and increasing serial together, so an already-running server can show its latest demo state to a new viewer. Older or repeated serials are ignored. Ordinary notices continue through the RemoteEvent.
+
+After its labels and listeners are ready, the HUD sends `ready` through `maze_knowledge_event` until the server acknowledges that player. The server accepts only that exact action and records each connected player once. Repeated requests return before triggering any work. Departing players are removed from the ready set. A client cannot request a route, change the shared map or restart the demonstration through this handler.
+
+The first movement countdown begins when at least one viewer is ready. Once started, the current cycle continues normally for other viewers. A late client gets its camera from `demofocus`, which persists after the wall is destroyed. The camera is framed once, so later cycles do not override someone manually looking around.
+
+After the selected collapses and agent completion, or the 240-second completion deadline, the collapse controller asks the navigation controller to stop any remaining movers. Following a 15-second pause, it restores only the selected walls from their original templates and replaces the debris folder. The server sends a reset message carrying that new folder as the generation token. The navigation controller clears routes, gates, blockers and learned cells, resets the rig setup and starts the next cycle with ready viewers already registered.
+
+Reset messages from another folder and duplicates for the same folder are ignored. Fragment callbacks remember their original folder, so the previous cycle cannot announce clearance for the replacement cycle. Old demo timestamps are cleared before seeding the new agents, preventing an earlier clearance time from releasing the new runner too soon.
+
+The acknowledgement and snapshot contain presentation state, not evidence of applicant identity or authorship.

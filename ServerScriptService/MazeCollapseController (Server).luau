@@ -386,8 +386,10 @@ local function release_layer(wall: BasePart, layer: {BasePart}, layer_index: num
 end
 
 local function waitforclear(id: string, position: Vector3, parts: {BasePart})
+	local owner = debris_folder
 	task.spawn(function()
-		while currentrun() do
+		-- a callback from the previous cycle must not announce clearance for its replacement
+		while currentrun() and debris_folder == owner do
 			local blocked = false
 			for _, part in parts do
 				if part:IsDescendantOf(workspace) and part.CanCollide then
@@ -446,33 +448,68 @@ local function awaitdemo(attribute: string, timeout: number): boolean
 end
 
 local candidates = collect_candidates()
-local selected_walls = choose_walls(candidates)
-debris_folder:SetAttribute("CandidateCount", #candidates)
-debris_folder:SetAttribute("SelectedWallCount", #selected_walls)
-debris_folder:SetAttribute("CollapsedWalls", 0)
+local selected = choose_walls(candidates)
+local templates: {BasePart} = {}
+-- keep only the eight authored walls we change, replay leaves the rest of the place alone
+for _, wall in selected do table.insert(templates, wall:Clone()) end
+script.Destroying:Connect(function()
+	for _, wall in templates do wall:Destroy() end
+end)
 
-for index, wall in selected_walls do
-	wall:SetAttribute("CollapsibleWall", true)
-	wall:SetAttribute("CollapseOrder", index)
-	wall:SetAttribute("CollapseState", "stable")
+local function finished(): boolean
+	for _, model in agents:GetChildren() do
+		if not model:IsA("Model") then continue end
+		local state = model:GetAttribute("PathState")
+		if state ~= "arrived" and state ~= "stopped" then return false end
+	end
+	return true
 end
 
--- leave time to see the peer react before drawing attention to the wall
-if not awaitdemo("demoshared", 30) then return end
-task.wait(3)
-for index, wall in selected_walls do
+local function rundemo(walls: {BasePart})
+	debris_folder:SetAttribute("CandidateCount", #candidates)
+	debris_folder:SetAttribute("SelectedWallCount", #walls)
+	debris_folder:SetAttribute("CollapsedWalls", 0)
+	for index, wall in walls do
+		wall:SetAttribute("CollapsibleWall", true)
+		wall:SetAttribute("CollapseOrder", index)
+		wall:SetAttribute("CollapseState", "stable")
+	end
+	if not awaitdemo("demoshared", 30) then return end
+	task.wait(3)
+	for index, wall in walls do
+		if not currentrun() then return end
+		if wall.Parent then collapse_wall(wall) end
+		if index == 1 and not awaitdemo("democomplete", 90) then return end
+		if index < #walls then task.wait(random:NextNumber(minimum_collapse_interval, maximum_collapse_interval)) end
+	end
+end
+
+while currentrun() do
+	-- no viewer means no countdown, the HUD ready signal starts the navigation controller
+	while currentrun() and not agents:GetAttribute("demostarted") do task.wait(0.25) end
 	if not currentrun() then break end
-	if wall.Parent then
-		collapse_wall(wall)
+	local deadline = os.clock() + 240
+	rundemo(selected)
+	while currentrun() and not finished() and os.clock() < deadline do task.wait(0.25) end
+	if not currentrun() then break end
+	-- stop every mover before restoring solid walls, including a rig that hit the round deadline
+	world_changed_event:Fire({action = "pause", owner = debris_folder})
+	agents:SetAttribute("demoreplayat", workspace:GetServerTimeNow() + 15)
+	task.wait(15)
+	if not currentrun() then break end
+	debris_folder:Destroy()
+	selected = {}
+	for _, template in templates do
+		local remaining = maze:FindFirstChild(template.Name)
+		if remaining then remaining:Destroy() end
+		local wall = template:Clone()
+		wall.Parent = maze
+		table.insert(selected, wall)
 	end
-	if index == 1 and not awaitdemo("democomplete", 90) then return end
-	if index < #selected_walls then
-		task.wait(random:NextNumber(minimum_collapse_interval, maximum_collapse_interval))
-	end
+	debris_folder = Instance.new("Folder")
+	debris_folder.Name = "maze_collapse_debris"
+	debris_folder.Parent = workspace
+	-- the new folder is also the generation token, so delayed old events fail validation
+	agents:SetAttribute("demostarted", nil)
+	world_changed_event:Fire({action = "reset", owner = debris_folder})
 end
-
-print(string.format(
-	"[maze collapse] completed %d of %d selected structural collapses",
-	debris_folder:GetAttribute("CollapsedWalls") or 0,
-	#selected_walls
-))

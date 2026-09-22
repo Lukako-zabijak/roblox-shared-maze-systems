@@ -6,6 +6,7 @@
 -- mazerigs sets up the authored rigs and probes, movement and shared knowledge stay here
 -- the collapse controller reports physical changes, the client hud only displays the messages
 
+-- a missing cell is still unknown, false means checked clear rather than missing
 type discovery = {blocked: boolean}
 type grid = {width: number, height: number, revision: number, cells: {[number]: discovery}}
 type entry = {cell: number, cost: number, score: number}
@@ -51,10 +52,12 @@ end
 local function push(heap: {entry}, item: entry)
 	local index = #heap + 1
 	while index > 1 do
+		-- children sit at twice their parent index, rounding down walks back up one level
 		local parent = math.floor(index / 2)
 		if heap[parent].score <= item.score then
 			break
 		end
+		-- move the parent into the gap, the new item stays in hand until it fits
 		heap[index] = heap[parent]
 		index = parent
 	end
@@ -70,7 +73,9 @@ local function pop(heap: {entry}): entry
 	end
 	local index = 1
 	while index * 2 <= #heap do
+		-- the left child is 2 * index, its right sibling is the next slot
 		local child = index * 2
+		-- lift the cheaper child so the other branch never ends up above a cheaper entry
 		if child < #heap and heap[child + 1].score < heap[child].score then
 			child += 1
 		end
@@ -80,6 +85,7 @@ local function pop(heap: {entry}): entry
 		heap[index] = heap[child]
 		index = child
 	end
+	-- both children now cost at least this much, so the spare entry can fill the gap
 	heap[index] = last
 	return first
 end
@@ -114,13 +120,15 @@ end
 
 -- costs is the distance already paid, score adds the estimate still left to the goal
 local function findroute(map: grid, start: number, goal: number): ({number}, number)
+	-- frontier holds candidates, costs remembers the best price found for each cell
 	local frontier: {entry} = {}
 	local costs: {[number]: number} = {[start] = 0}
+	-- previous remembers which cell led here, retrace follows these links back to the start
 	local previous: {[number]: number} = {}
 	push(frontier, {cell = start, cost = 0, score = distance(map, start, goal)})
 	while #frontier > 0 do
 		local current = pop(frontier)
-		-- a cheaper entry can overtake one already in the heap, leave the older one alone
+		-- improving a cell adds a new heap entry, skip the old one when its saved cost is out of date
 		if current.cost ~= costs[current.cell] then
 			continue
 		end
@@ -167,6 +175,8 @@ end
 -- runtime adapter
 -- everything above works on cell ids, the code below connects it to the actual maze
 local runservice = game:GetService("RunService")
+local players = game:GetService("Players")
+local httpservice = game:GetService("HttpService")
 local replicatedstorage = game:GetService("ReplicatedStorage")
 local serverstorage = game:GetService("ServerStorage")
 local rigs = require(script.Parent:WaitForChild("mazerigs"))
@@ -189,10 +199,12 @@ local reach = 1.1
 local movetimeout = 2.5
 local recoverytime = 1.5
 local map = newgrid(math.round(floor.Size.X / cellsize), math.round(floor.Size.Z / cellsize))
+-- half a tile moves the origin from the floor corner to the center of its first cell
 local origin = Vector3.new(-floor.Size.X / 2 + cellsize / 2, floor.Size.Y / 2, -floor.Size.Z / 2 + cellsize / 2)
 -- use the same collision rules as the rigs, otherwise a decorative marker could look like a wall
 local overlap = OverlapParams.new()
 overlap.FilterType = Enum.RaycastFilterType.Exclude
+-- rigs must not discover each other as walls, their collision group also lets them pass
 overlap.FilterDescendantsInstances = {agents}
 overlap.CollisionGroup = "MazeAgents"
 overlap.RespectCanCollide = true
@@ -200,6 +212,8 @@ overlap.RespectCanCollide = true
 overlap.MaxParts = 1
 
 -- anchor is the last reached center, target can still be halfway through a move
+-- dirty asks for another search, mode says what the rig is doing until that search can run
+-- cursor points into the route, openings keeps every cleared cell waiting for comparison
 type agent = {
 	rig: rigs.rig, mode: string, anchor: number, target: number, route: {number}, cursor: number,
 	dirty: boolean, reason: string, started: number, progress: number, best: number,
@@ -217,6 +231,10 @@ local blockers: {[number]: obstruction} = {}
 local connections: {RBXScriptConnection} = {}
 local running = true
 local nextnotice = 0
+local noticerevision = 0
+local started = false
+local viewers: {[Player]: boolean} = {}
+local resetowner: Instance? = nil
 
 local democell = agents:GetAttribute("democell")
 assert(typeof(democell) == "number", "demo cell was not set by the rig setup")
@@ -226,7 +244,9 @@ local function demomessage(phase: string, message: string, now: number)
 	agents:SetAttribute("demomessage", message)
 	nextnotice = now + 4
 	local kind = if phase == "warning" then "collapse_warning" elseif phase == "falling" then "collapse" elseif phase == "shortcut" or phase == "complete" then "recommended" else "shared"
-	knowledgeevent:FireAllClients({message = message, kind = kind, version = map.revision, priority = true})
+	-- one replicated string keeps the message and its sequence together for late joiners
+	noticerevision += 1
+	agents:SetAttribute("demosnapshot", httpservice:JSONEncode({message = message, kind = kind, serial = noticerevision}))
 end
 
 -- keep the grid relative to the floor rather than duplicating world offsets in each caller
@@ -236,6 +256,7 @@ local function worldpoint(cell: number): Vector3
 end
 
 local function cellfromworld(position: Vector3): number?
+	-- undo the floor transform first, then round the tile distances to the nearest center
 	local point = floor.CFrame:PointToObjectSpace(position) - origin
 	return cellat(map, math.round(point.X / cellsize), math.round(point.Z / cellsize))
 end
@@ -543,6 +564,7 @@ local function advance(state: agent, now: number): boolean
 	return true
 end
 
+-- true means this agent may use a search slot, it does not mean the rig has arrived
 local function update(state: agent, now: number): boolean
 	local rig = state.rig
 	if state.mode == "arrived" or state.mode == "stopped" then
@@ -603,6 +625,8 @@ local function footprint(record: collapse): {[number]: boolean}
 		local size = part.Size * 0.5
 		local right, up, look = pose.RightVector, pose.UpVector, pose.LookVector
 		-- rotated debris can overlap more than its center cell, include the body's half width too
+		-- each basis component projects one half-size onto this axis, abs keeps both sides positive
+		-- 1.3 is half the 2.6 stud body query, so a cell stays blocked before its center hits debris
 		local xradius = math.abs(right.X) * size.X + math.abs(up.X) * size.Y + math.abs(look.X) * size.Z + 1.3
 		local zradius = math.abs(right.Z) * size.X + math.abs(up.Z) * size.Y + math.abs(look.Z) * size.Z + 1.3
 		local point = pose.Position - origin
@@ -739,29 +763,78 @@ local function stop()
 	table.clear(gates)
 	table.clear(connections)
 	table.clear(map.cells)
+	table.clear(viewers)
 end
 
-for _, rig in initialrigs do
-	local cell = cellfromworld(rig.root.Position)
-	assert(cell, "agent is outside the navigation grid")
-	local state: agent = {
-		rig = rig, mode = "planning", anchor = cell, target = cell, route = {}, cursor = 1,
-		dirty = true, reason = "initial plan", started = 0, progress = 0, best = math.huge,
-		nextplan = 0, nextcommand = 0, failures = 0, sharedat = -math.huge, peerchanges = 0,
-		peertrigger = nil, peersource = "", openings = {}, shortcuts = 0, demopath = false, demoentry = nil, demohold = false,
-	}
-	table.insert(states, state)
-	local delay = rig.model:GetAttribute("startdelay")
-	if typeof(delay) == "number" and delay > 0 then
-		state.nextplan = os.clock() + delay
-		setmode(state, "queued")
-	else
-		beginmove(state, cell, "recovering", os.clock())
+local function seed(riglist: {rigs.rig})
+	for _, rig in riglist do
+		local cell = cellfromworld(rig.root.Position)
+		assert(cell, "agent is outside the navigation grid")
+		local state: agent = {
+			rig = rig, mode = "planning", anchor = cell, target = cell, route = {}, cursor = 1,
+			dirty = true, reason = "initial plan", started = 0, progress = 0, best = math.huge,
+			nextplan = 0, nextcommand = 0, failures = 0, sharedat = -math.huge, peerchanges = 0,
+			peertrigger = nil, peersource = "", openings = {}, shortcuts = 0, demopath = false, demoentry = nil, demohold = false,
+		}
+		table.insert(states, state)
+		rig.model:SetAttribute("currentcell", cell)
+		rig.model:SetAttribute("targetcell", cell)
+		rig.model:SetAttribute("sharedroutechanges", 0)
+		rig.model:SetAttribute("shortcutchanges", 0)
+		local delay = rig.model:GetAttribute("startdelay")
+		if typeof(delay) == "number" and delay > 0 then
+			state.nextplan = os.clock() + delay
+			setmode(state, "queued")
+		else
+			beginmove(state, cell, "recovering", os.clock())
+		end
+	end
+
+end
+
+-- the server owns replay, a ready message can only register its sending player once
+table.insert(connections, knowledgeevent.OnServerEvent:Connect(function(player, action)
+	if not running or action ~= "ready" or player.Parent ~= players or viewers[player] then return end
+	viewers[player] = true
+	player:SetAttribute("mazeviewerready", true)
+end))
+table.insert(connections, players.PlayerRemoving:Connect(function(player) viewers[player] = nil end))
+
+local function pause()
+	for _, state in states do
+		if state.mode ~= "arrived" and state.mode ~= "stopped" then retire(state, "stopped") end
 	end
 end
 
+local function reset()
+	pause()
+	table.clear(states)
+	table.clear(blockers)
+	table.clear(collapses)
+	table.clear(gates)
+	table.clear(map.cells)
+	map.revision = 0
+	generation = nil
+	started = false
+	seed(rigs.start(maze, agents))
+	agents:SetAttribute("cyclecount", (agents:GetAttribute("cyclecount") or 0) + 1)
+	demomessage("waiting", "waiting for a viewer before the next demonstration", os.clock())
+end
+
+agents:SetAttribute("cyclecount", 1)
+seed(initialrigs)
+demomessage("waiting", "waiting for the viewer to finish loading", os.clock())
 local elapsed = 0
-table.insert(connections, worldevent.Event:Connect(worldchanged))
+table.insert(connections, worldevent.Event:Connect(function(payload)
+	if typeof(payload) ~= "table" or not running then return end
+	if payload.action ~= "reset" and payload.action ~= "pause" then worldchanged(payload) return end
+	-- only the current server debris folder can control a cycle, never a client message
+	if not payload.owner or payload.owner ~= workspace:FindFirstChild("maze_collapse_debris") then return end
+	if payload.action == "pause" then pause() return end
+	if resetowner == payload.owner then return end
+	resetowner = payload.owner
+	reset()
+end))
 -- the module watches the owner because a destroyed script cannot reliably run its own deferred cleanup
 rigs.watch(script, stop)
 table.insert(connections, runservice.Heartbeat:Connect(function(dt)
@@ -771,6 +844,17 @@ table.insert(connections, runservice.Heartbeat:Connect(function(dt)
 	end
 	elapsed = 0
 	local now = os.clock()
+	if not started then
+		-- the delay begins after a real HUD is listening, not while its client is still loading
+		if not next(viewers) then return end
+		started = true
+		for _, state in states do state.nextplan = now + (state.rig.model:GetAttribute("startdelay") or 5) end
+		agents:SetAttribute("demostarted", true)
+		demomessage("starting", "starting in 5 seconds - watch the scout and the nearby runner", now)
+	end
+	if agents:GetAttribute("demoreplayat") and agents:GetAttribute("demophase") ~= "replay" then
+		demomessage("replay", "run finished - restoring the maze for another demonstration in 15 seconds", now)
+	end
 	-- share one search budget across the group, discoveries still arrive even when planning has to wait
 	local budget = 2
 	updatedebris(now)

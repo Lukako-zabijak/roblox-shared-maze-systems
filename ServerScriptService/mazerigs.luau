@@ -225,6 +225,12 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 	local function preparedemo(models: {Model})
 		local wall = maze:FindFirstChild("Wall_32_31")
 		assert(wall and wall:IsA("BasePart"), "demo wall is missing")
+		-- old timestamps would release the next runner immediately, clear the whole demo state first
+		for name in agentsfolder:GetAttributes() do
+			if string.sub(name, 1, 4) == "demo" then agentsfolder:SetAttribute(name, nil) end
+		end
+		-- the camera can use this position even after the wall has been destroyed
+		agentsfolder:SetAttribute("demofocus", wall.Position)
 		local width = math.round(mazefloor.Size.X / 8)
 		local origin = Vector3.new(-mazefloor.Size.X / 2 + 4, mazefloor.Size.Y / 2, -mazefloor.Size.Z / 2 + 4)
 		local point = mazefloor.CFrame:PointToObjectSpace(wall.Position) - origin
