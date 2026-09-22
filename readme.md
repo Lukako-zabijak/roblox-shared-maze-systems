@@ -2,7 +2,7 @@
 
 15 agents share discoveries, change routes and use shortcuts opened by collapsing walls
 
-[Main script](ServerScriptService/mazeagentcontroller%20%28server%29.luau) · [Play the demo](https://www.roblox.com/games/113425488924507/PathfindPractice) · [Walkthrough](docs/navigation.md) · [Run the tests](tests/readme.md)
+[Main script](ServerScriptService/mazeagentcontroller%20%28server%29) · [Play the demo](https://www.roblox.com/games/113425488924507/PathfindPractice) · [Walkthrough](docs/navigation.md) · [Run the tests](tests/readme.md)
 
 ## Watch
 
@@ -18,17 +18,17 @@ Camera: WASD to move, E/Q for height, right mouse to look, middle mouse to pan, 
 
 ## Code
 
-The main example is one **914-line Luau script with 730 nonblank, noncomment code lines**. It combines A* with a binary heap, a partially known shared grid, selective replanning, bounded movement recovery and collapse-event validation
+The main example is one **924-line Luau script with 730 nonblank, noncomment code lines**. It combines A* with a binary heap, a partially known shared grid, selective replanning, bounded movement recovery and collapse-event validation
 
 Routes are calculated at runtime. Starting positions and the first collapse are staged to make the interaction visible
 
 | File | Studio placement |
 | --- | --- |
-| [mazeagentcontroller (server).luau](ServerScriptService/mazeagentcontroller%20%28server%29.luau) | ServerScriptService.MazeAgentController |
-| [mazecollapsecontroller (server).luau](ServerScriptService/mazecollapsecontroller%20%28server%29.luau) | ServerScriptService.maze_collapse_controller |
-| [mazerigs.luau](ServerScriptService/mazerigs.luau) | ServerScriptService.mazerigs (ModuleScript) |
-| [mazeknowledgecontroller (client).luau](StarterGui/MazeKnowledgeGui/mazeknowledgecontroller%20%28client%29.luau) | StarterGui.maze_knowledge_gui.controller |
-| [freecamcontroller (client).luau](StarterPlayer/StarterPlayerScripts/freecamcontroller%20%28client%29.luau) | StarterPlayer.StarterPlayerScripts.freecam_controller |
+| [mazeagentcontroller (server)](ServerScriptService/mazeagentcontroller%20%28server%29) | ServerScriptService.MazeAgentController |
+| [mazecollapsecontroller (server)](ServerScriptService/mazecollapsecontroller%20%28server%29) | ServerScriptService.maze_collapse_controller |
+| [mazerigs](ServerScriptService/mazerigs) | ServerScriptService.mazerigs (ModuleScript) |
+| [mazeknowledgecontroller (client)](StarterGui/MazeKnowledgeGui/mazeknowledgecontroller%20%28client%29) | StarterGui.maze_knowledge_gui.controller |
+| [freecamcontroller (client)](StarterPlayer/StarterPlayerScripts/freecamcontroller%20%28client%29) | StarterPlayer.StarterPlayerScripts.freecam_controller |
 
 The scripts depend on the authored maze, rigs and existing HUD in the demo; cloning this repo alone does not recreate the place
 

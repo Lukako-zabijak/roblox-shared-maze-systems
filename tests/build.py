@@ -2,7 +2,7 @@
 from pathlib import Path
 
 tests = Path(__file__).resolve().parent
-source = (tests.parent / 'ServerScriptService/mazeagentcontroller (server).luau').read_text(encoding='utf-8')
+source = (tests.parent / 'ServerScriptService/mazeagentcontroller (server)').read_text(encoding='utf-8')
 output = tests / 'generated'
 output.mkdir(exist_ok=True)
 
@@ -15,7 +15,7 @@ def replace(text, old, new, count=1):
     return text.replace(old, new)
 
 core = before(source, '-- runtime adapter')
-(output / 'core.luau').write_text(core + (tests / 'core.luau').read_text(encoding='utf-8'), encoding='utf-8')
+(output / 'core').write_text(core + (tests / 'core').read_text(encoding='utf-8'), encoding='utf-8')
 
 behavior = before(source, 'local function seed(')
 for old, new, count in [
@@ -32,7 +32,7 @@ for old, new, count in [
 ]:
     behavior = replace(behavior, old, new, count)
 
-fixture = (tests / 'fixture.luau').read_text(encoding='utf-8')
-checks = (tests / 'behavior.luau').read_text(encoding='utf-8')
-(output / 'behavior.luau').write_text(fixture + behavior + checks, encoding='utf-8')
-print(f'Built core.luau and behavior.luau in {output}')
+fixture = (tests / 'fixture').read_text(encoding='utf-8')
+checks = (tests / 'behavior').read_text(encoding='utf-8')
+(output / 'behavior').write_text(fixture + behavior + checks, encoding='utf-8')
+print(f'Built core and behavior in {output}')
