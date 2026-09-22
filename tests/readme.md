@@ -5,7 +5,7 @@ Requires Python 3 and Roblox Studio. No Python packages, MCP server or live game
 1. From the repository root, run `python tests/build.py`
 2. Open a blank baseplate in Studio and stay in Edit mode
 3. Create two ModuleScripts in ServerStorage named `coretests` and `behaviortests`
-4. Paste `tests/generated/core.luau` into coretests and `tests/generated/behavior.luau` into behaviortests
+4. Paste `tests/generated/core` into coretests and `tests/generated/behavior` into behaviortests
 5. Run this in Studio's Command Bar:
 
 ```luau
@@ -24,8 +24,8 @@ Expected output for this revision: `coretests 880` and `behaviortests 29`. A fai
 
 ## What runs
 
-- `core.luau`: grid boundaries, discovery revisions, route costs and shortcuts; compares A* with an independent exhaustive search on 100 seeded maps and checks returned routes
-- `fixture.luau` and `behavior.luau`: isolated parts at (10000, 0, 10000), real overlap queries, moving debris, stale/duplicate collapse events, route changes, crossing evidence, recovery limits and stopped-controller cleanup
+- `core`: grid boundaries, discovery revisions, route costs and shortcuts; compares A* with an independent exhaustive search on 100 seeded maps and checks returned routes
+- `fixture` and `behavior`: isolated parts at (10000, 0, 10000), real overlap queries, moving debris, stale/duplicate collapse events, route changes, crossing evidence, recovery limits and stopped-controller cleanup
 - `build.py`: extracts functions from the current main script instead of keeping a second planner implementation. Exact-match substitutions fail if the expected adapter changes
 
 The behavior fixture replaces rig drawing, humanoid movement commands and client notifications with stubs, redirects world ownership checks to its folder, and uses the Default collision group. It removes startup and the scheduler. Its folder is destroyed after assertions, including assertion failure

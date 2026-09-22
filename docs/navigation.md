@@ -1,8 +1,8 @@
 # Navigation walkthrough
 
-Source: [main navigation script](../ServerScriptService/mazeagentcontroller%20%28server%29.luau)
+Source: [main navigation script](../ServerScriptService/mazeagentcontroller%20%28server%29)
 
-Line references below match the submission overhaul
+Line references below match the current main script
 
 ## Overview
 
@@ -18,16 +18,16 @@ Line references below match the submission overhaul
 
 | Main script lines | Read for | Main point to explain |
 | --- | --- | --- |
-| 15-53 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
-| 55-95 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
-| 97-107 | Discovery and revision | Repeating the same observation does not invalidate routes again |
-| 110-181 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
-| 184-291 | Roblox adapter | Convert between floor-relative cells and world positions |
-| 293-389 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
-| 391-498 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
-| 500-634 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
-| 636-777 | Debris and collapse events | Check physical clearance, event order and current-run identity |
-| 779-914 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
+| 17-55 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
+| 57-97 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
+| 99-109 | Discovery and revision | Repeating the same observation does not invalidate routes again |
+| 113-184 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
+| 187-295 | Roblox adapter | Convert between floor-relative cells and world positions |
+| 298-394 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
+| 396-504 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
+| 506-642 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
+| 644-786 | Debris and collapse events | Check physical clearance, event order and current-run identity |
+| 788-924 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
 
 ## 1. How the map represents knowledge
 
