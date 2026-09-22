@@ -18,6 +18,7 @@ local function newgrid(width: number, height: number): grid
 end
 
 -- the table uses one id per tile, subtracting 1 makes the x/z calculation zero based
+-- the remainder gives the column, whole rows give z
 local function coordinates(map: grid, cell: number): (number, number)
 	return (cell - 1) % map.width, math.floor((cell - 1) / map.width)
 end
@@ -38,6 +39,7 @@ local function distance(map: grid, left: number, right: number): number
 	return math.abs(x - otherx) + math.abs(z - otherz)
 end
 
+-- try one step along each axis, cellat drops any step outside the maze
 local function neighbors(map: grid, cell: number): {number}
 	local x, z = coordinates(map, cell)
 	local result = {}
@@ -159,6 +161,7 @@ local function findroute(map: grid, start: number, goal: number): ({number}, num
 end
 
 -- count only the part of the old route still ahead of this agent
+-- first is where we already are, only entering the cells after it adds cost
 local function routecost(map: grid, route: {number}, first: number): number
 	if #route == 0 then return math.huge end
 	local cost = 0
@@ -170,6 +173,7 @@ local function routecost(map: grid, route: {number}, first: number): number
 	return cost
 end
 
+-- the tiny margin keeps floating-point rounding from looking like a real improvement
 local function couldshorten(map: grid, anchor: number, opened: number, goal: number, cost: number): boolean
 	-- even a perfectly clear way through this opening can't help if this lower bound is too long
 	return distance(map, anchor, opened) + distance(map, opened, goal) < cost - 0.0001
@@ -198,7 +202,9 @@ local cellsize = 8
 local interval = 0.16
 -- leave enough room for humanoid's own arrival tolerance, asking for a tighter center can stall it
 local reach = 1.1
+-- this caps the whole move, even if the rig keeps inching forward
 local movetimeout = 2.5
+-- this one measures time since useful progress, so a fully stuck rig is caught sooner
 local recoverytime = 1.5
 local map = newgrid(math.round(floor.Size.X / cellsize), math.round(floor.Size.Z / cellsize))
 -- half a tile moves the origin from the floor corner to the center of its first cell
@@ -222,6 +228,7 @@ type agent = {
 	nextplan: number, nextcommand: number, failures: number, sharedat: number, peerchanges: number,
 	peertrigger: number?, peersource: string, openings: {[number]: boolean}, shortcuts: number, demopath: boolean, demoentry: number?, demohold: boolean,
 }
+-- keep the last blocker and scan time so moving debris can be checked again later
 type obstruction = {part: BasePart, checked: number}
 type collapse = {revision: number, phase: string, cell: number, parts: {BasePart}, footprint: {[number]: boolean}}
 local collapses: {[string]: collapse} = {}
@@ -244,6 +251,7 @@ assert(typeof(democell) == "number", "demo cell was not set by the rig setup")
 local function demomessage(phase: string, message: string, now: number)
 	agents:SetAttribute("demophase", phase)
 	agents:SetAttribute("demomessage", message)
+	-- let this demo message stay visible before ordinary discovery notices compete with it
 	nextnotice = now + 4
 	local kind = if phase == "warning" then "collapse_warning" elseif phase == "falling" then "collapse" elseif phase == "shortcut" or phase == "complete" then "recommended" else "shared"
 	-- one replicated string keeps the message and its sequence together for late joiners
@@ -266,6 +274,7 @@ end
 local goalcell = cellfromworld(goal.Position)
 assert(goalcell, "goal is outside the navigation grid")
 
+-- ignore the route behind us, a wall there does not block the next move
 local function remainingcontains(state: agent, cell: number): boolean
 	return table.find(state.route, cell, state.cursor) ~= nil
 end
@@ -303,6 +312,7 @@ local function publish(cell: number, blocked: boolean, source: string, now: numb
 		local first = table.find(state.route, state.anchor) or 1
 		-- skip the search if even the shortest possible way through this opening cannot beat the old route
 		local useful = reopened and couldshorten(map, state.anchor, cell, goalcell :: number, routecost(map, state.route, first))
+		-- a waiting rig has no route to improve, any reopened passage deserves another try
 		if not (useful or (reopened and state.mode == "waiting") or (blocked and remainingcontains(state, cell))) then
 			continue
 		end
@@ -313,6 +323,7 @@ local function publish(cell: number, blocked: boolean, source: string, now: numb
 		state.reason = if external then "structural change" elseif state.rig.model.Name == source then "local discovery" else "shared discovery"
 		state.rig.model:SetAttribute("LastKnowledgeSource", source)
 		state.rig.model:SetAttribute("lastdiscoverycell", cell)
+		-- local scans and wall events still change plans, they just are not discoveries from a peer
 		if state.rig.model.Name == source or external then continue end
 		state.sharedat = now
 		if blocked then
@@ -334,6 +345,7 @@ local function publish(cell: number, blocked: boolean, source: string, now: numb
 end
 
 local function readcell(cell: number): BasePart?
+	-- lift the body box above the floor so the floor itself does not count as a blockage
 	local center = worldpoint(cell) + floor.CFrame.UpVector * 2.5
 	-- check the space the body needs, a single center ray can miss debris beside it
 	local parts = workspace:GetPartBoundsInBox(CFrame.new(center) * floor.CFrame.Rotation, Vector3.new(2.6, 4, 2.6), overlap)
@@ -355,6 +367,7 @@ local function beginmove(state: agent, target: number, mode: string, now: number
 	state.started = now
 	-- progress has its own timer so repeated movement commands cannot hide a stuck rig
 	state.progress = now
+	-- the first distance sample must beat this, then later samples need actual progress
 	state.best = math.huge
 	state.nextcommand = now + 0.5
 	setmode(state, mode)
@@ -379,8 +392,10 @@ end
 local function recordopenings(state: agent, route: {number}, cost: number, oldstart: number, oldcost: number, now: number)
 	local oldroute = state.route
 	for cell in state.openings do
+		-- finding a first usable route is not a shortcut, there must be a finite old route to beat
 		if oldcost == math.huge or cost >= oldcost - 0.0001 then break end
 		if not table.find(route, cell) or table.find(oldroute, cell, oldstart) then continue end
+		-- count this route change once even if it uses several newly opened cells
 		state.shortcuts += 1
 		state.rig.model:SetAttribute("shortcutchanges", state.shortcuts)
 		state.rig.model:SetAttribute("shortcutcell", cell)
@@ -397,6 +412,7 @@ local function recordopenings(state: agent, route: {number}, cost: number, oldst
 	agents:SetAttribute("demoshortcut", true)
 	agents:SetAttribute("demoshortcutagent", state.rig.model.Name)
 	agents:SetAttribute("demobeforesteps", #oldroute - oldstart)
+	-- the route includes where we are standing, so one cell is not a move
 	agents:SetAttribute("demoaftersteps", #route - 1)
 	agents:SetAttribute("demoshortcutat", now)
 	demomessage("shortcut", string.format("%s found a shorter route through the cleared wall: %d moves instead of %d", state.rig.model.Name, #route - 1, #oldroute - oldstart), now)
@@ -405,6 +421,7 @@ end
 -- the blocked cell must disappear from a real planned route before this counts as a shared change
 local function recordshared(state: agent, route: {number}, oldstart: number, now: number)
 	local oldroute = state.route
+	-- compare against the old route from our current anchor, not the part already walked
 	local changed = #route ~= #oldroute - oldstart + 1
 	for index, cell in route do
 		changed = changed or oldroute[oldstart + index - 1] ~= cell
@@ -419,10 +436,12 @@ local function recordshared(state: agent, route: {number}, oldstart: number, now
 	state.rig.model:SetAttribute("sharedchangesource", state.peersource)
 	local separation = (state.rig.root.Position - worldpoint(trigger)).Magnitude
 	state.rig.model:SetAttribute("sharedchangedistance", separation)
+	-- leave at least two grid steps to the blockage so the demo shows a reaction before reaching it
 	if trigger ~= democell or distance(map, state.anchor, trigger) < 2 then return end
 	if agents:GetAttribute("demoshared") then return end
 	-- this pause stages the demonstration, the planner still decides which route to take afterward
 	state.demohold = true
+	-- the runner can resume when debris clears, this deadline also releases it if clearance never arrives
 	state.nextplan = now + 25
 	agents:SetAttribute("demoshared", true)
 	agents:SetAttribute("demoreceiver", state.rig.model.Name)
@@ -435,6 +454,7 @@ end
 local function plan(state: agent, now: number)
 	local oldroute = state.route
 	local oldstart = table.find(oldroute, state.anchor) or 1
+	-- if recovery moved us off the old route, that route is no longer a valid comparison
 	local oldcost = if oldroute[oldstart] == state.anchor then routecost(map, oldroute, oldstart) else math.huge
 	local route, cost = findroute(map, state.anchor, goalcell :: number)
 	-- an opening is worth checking, but it doesn't automatically make a better route
@@ -443,6 +463,7 @@ local function plan(state: agent, now: number)
 		route = table.move(oldroute, oldstart, #oldroute, 1, {})
 		cost = oldcost
 	end
+	-- both checks need the old route and its trigger before we replace them below
 	recordopenings(state, route, cost, oldstart, oldcost, now)
 	table.clear(state.openings)
 	recordshared(state, route, oldstart, now)
@@ -458,9 +479,11 @@ local function plan(state: agent, now: number)
 	state.rig.model:SetAttribute("plannedroute", table.concat(route, ","))
 	if #route == 0 then
 		setmode(state, "waiting")
+		-- give the search a breather before trying the same blocked map again
 		state.nextplan = now + 1
 		return
 	end
+	-- a route containing only the anchor means the search started at the goal
 	if #route == 1 then
 		retire(state, "arrived")
 		return
@@ -540,6 +563,7 @@ local function maintainmove(state: agent, now: number)
 	end
 	if state.mode ~= "moving" and state.mode ~= "recovering" then return end
 	if now < state.nextcommand then return end
+	-- refresh the humanoid command without restarting the stall timers for this move
 	state.nextcommand = now + 0.5
 	drive(state, worldpoint(state.target))
 end
@@ -591,6 +615,7 @@ local function update(state: agent, now: number): boolean
 
 	if state.mode == "queued" then
 		if now < state.nextplan then return false end
+		-- line the queued rig up with its cell center before planning its first grid step
 		beginmove(state, state.anchor, "recovering", now)
 	end
 	local travelling = state.mode == "moving" or state.mode == "recovering"
@@ -629,7 +654,7 @@ local function footprint(record: collapse): {[number]: boolean}
 		local right, up, look = pose.RightVector, pose.UpVector, pose.LookVector
 		-- rotated debris can overlap more than its center cell, include the body's half width too
 		-- each basis component projects one half-size onto this axis, abs keeps both sides positive
-		-- 1.3 is half the 2.6 stud body query, so a cell stays blocked before its center hits debris
+		-- 1.3 is half the body query, these are cells worth checking, the body query still decides what's blocked
 		local xradius = math.abs(right.X) * size.X + math.abs(up.X) * size.Y + math.abs(look.X) * size.Z + 1.3
 		local zradius = math.abs(right.Z) * size.X + math.abs(up.Z) * size.Y + math.abs(look.Z) * size.Z + 1.3
 		local point = pose.Position - origin
@@ -684,6 +709,7 @@ local function worldchanged(payload: unknown)
 	if not current or data.owner ~= current then return end
 	if typeof(data.id) ~= "string" or #data.id > 80 then return end
 	if typeof(data.phase) ~= "string" or not phases[data.phase] then return end
+	-- the phase name and number must agree before we compare this event with the previous one
 	if phases[data.phase] ~= data.revision then return end
 	if typeof(data.position) ~= "Vector3" or typeof(data.parts) ~= "table" or #data.parts > 64 then return end
 	local position = data.position :: Vector3
@@ -722,6 +748,7 @@ local function worldchanged(payload: unknown)
 	end
 	refresh(cells, now)
 	record.footprint = if data.phase == "cleared" then {} else cells
+	-- keep the revision to reject late events, but let go of fragment references after clearance
 	if data.phase == "cleared" then table.clear(record.parts) end
 	agents:SetAttribute("lastcollapsephase", data.phase)
 	agents:SetAttribute("lastcollapsecell", cell)
@@ -800,6 +827,7 @@ end
 table.insert(connections, knowledgeevent.OnServerEvent:Connect(function(player, action)
 	if not running or action ~= "ready" or player.Parent ~= players or viewers[player] then return end
 	viewers[player] = true
+	-- the hud retries until it sees this acknowledgement, only the first ready message registers the player
 	player:SetAttribute("mazeviewerready", true)
 end))
 table.insert(connections, players.PlayerRemoving:Connect(function(player) viewers[player] = nil end))
@@ -836,6 +864,7 @@ table.insert(connections, worldevent.Event:Connect(function(payload)
 	-- only the current server debris folder can control a cycle, never a client message
 	if not payload.owner or payload.owner ~= workspace:FindFirstChild("maze_collapse_debris") then return end
 	if payload.action == "pause" then pause() return end
+	-- one new debris folder means one reset, duplicate events must not restart agents again
 	if resetowner == payload.owner then return end
 	resetowner = payload.owner
 	reset()
