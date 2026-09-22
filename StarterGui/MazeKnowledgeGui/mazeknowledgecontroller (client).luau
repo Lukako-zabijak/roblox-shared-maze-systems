@@ -1,7 +1,6 @@
 --!strict
 
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
--- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
 local replicated_storage = game:GetService("ReplicatedStorage")
 local tween_service = game:GetService("TweenService")
 local httpservice = game:GetService("HttpService")
@@ -23,7 +22,6 @@ local message_queue: {{message: string, kind: string}} = {}
 local queue_running = false
 local revision = 0
 local activefade: Tween? = nil
--- watermark:1/6:4d616465206279204c756b616b
 
 local function type_text(label: TextLabel, message: string, delay_per_character: number, token: number?): boolean
 	label.Text = ""
@@ -34,7 +32,6 @@ local function type_text(label: TextLabel, message: string, delay_per_character:
 	end
 	return true
 end
--- watermark:2/6:6f5a6162696a616b20286c75
 
 local function notification_color(kind: string): Color3
 	if kind == "blocked" then
@@ -51,7 +48,6 @@ local function notification_color(kind: string): Color3
 	end
 	return Color3.fromRGB(53, 217, 255)
 end
--- watermark:3/6:6b616b6f7a6162696a616b29
 
 local function shownotice(item: {message: string, kind: string})
 	local token = revision
@@ -78,7 +74,6 @@ local function run_queue()
 	end
 	queue_running = false
 end
--- watermark:4/6:206f6e20446973636f72642c
 
 local function queue_message(message: string, kind: string, priority: boolean?)
 	if priority then
@@ -98,7 +93,6 @@ local function queue_message(message: string, kind: string, priority: boolean?)
 		task.spawn(run_queue)
 	end
 end
--- watermark:5/6:206b696c6c65726f78333930
 
 local messages = knowledge_event.OnClientEvent:Connect(function(payload)
 	if typeof(payload) ~= "table" then
@@ -114,7 +108,6 @@ local messages = knowledge_event.OnClientEvent:Connect(function(payload)
 	end
 	queue_message(message, kind, payload.priority == true)
 end)
--- watermark:6/6:35206f6e20526f626c6f782e
 
 local lastserial = -1
 local function readsnapshot()

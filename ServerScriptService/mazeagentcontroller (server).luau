@@ -1,6 +1,5 @@
 -- discord: lukakozabijak | roblox: killerox3905
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
--- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
 --!strict
 
 -- mazerigs sets up the authored rigs and probes, movement and shared knowledge stay here
@@ -89,7 +88,6 @@ local function pop(heap: {entry}): entry
 	heap[index] = last
 	return first
 end
--- watermark:1/8:4d616465206279204c75
 
 local function discover(map: grid, cell: number, blocked: boolean): boolean
 	assert(cell >= 1 and cell <= map.width * map.height, "discovery outside grid")
@@ -188,7 +186,6 @@ local knowledgeevent = replicatedstorage:WaitForChild("maze_knowledge_event") ::
 local worldevent = serverstorage:WaitForChild("maze_world_changed") :: BindableEvent
 -- start also registers the agent collision group before it is used by the overlap query
 local initialrigs = rigs.start(maze, agents)
--- watermark:2/8:6b616b6f5a6162696a
 
 -- these walls are 8 stud tiles, keep the cell centers lined up with the authored maze
 local cellsize = 8
@@ -278,7 +275,6 @@ end
 local function drive(state: agent, target: Vector3?)
 	state.rig.humanoid:MoveTo(target or state.rig.root.Position)
 end
--- watermark:3/8:616b20286c756b616b
 
 local function publish(cell: number, blocked: boolean, source: string, now: number)
 	-- a local scan can catch a gap between falling pieces, keep the opening closed until the whole collapse clears
@@ -372,7 +368,6 @@ local function retire(state: agent, mode: string)
 	state.rig.model:SetAttribute("CommunicationState", "offline")
 	rigs.clear(state.rig)
 end
--- watermark:4/8:6f7a6162696a616b29
 
 -- count a shortcut only when the new route uses a reopened cell the old route didn't use
 local function recordopenings(state: agent, route: {number}, cost: number, oldstart: number, oldcost: number, now: number)
@@ -471,7 +466,6 @@ local function plan(state: agent, now: number)
 	end
 	beginmove(state, route[2], "moving", now)
 end
--- watermark:5/8:206f6e20446973636f
 
 local function recover(state: agent, now: number)
 	state.failures += 1
@@ -541,7 +535,6 @@ local function maintainmove(state: agent, now: number)
 	state.nextcommand = now + 0.5
 	drive(state, worldpoint(state.target))
 end
--- watermark:6/8:72642c206b696c6c65
 
 -- keep arrival/progress checks separate from the lifecycle states and the timeout recovery
 local function advance(state: agent, now: number): boolean
@@ -643,7 +636,6 @@ local function footprint(record: collapse): {[number]: boolean}
 	end
 	return cells
 end
--- watermark:7/8:726f7833393035206f
 
 local function updategeneration(now: number)
 	local current = workspace:FindFirstChild("maze_collapse_debris")
@@ -729,7 +721,6 @@ local function worldchanged(payload: unknown)
 	local messages = {warning = "is becoming unstable", falling = "collapsed - watching the debris", cleared = "debris cleared - checking the opening"}
 	knowledgeevent:FireAllClients({message = string.lower(data.id) .. " " .. messages[data.phase], kind = if data.phase == "warning" then "collapse_warning" elseif data.phase == "falling" then "collapse" else "shared", version = map.revision})
 end
--- watermark:8/8:6e20526f626c6f782e
 
 local function updatedebris(now: number)
 	updategeneration(now)

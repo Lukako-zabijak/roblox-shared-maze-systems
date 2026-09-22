@@ -1,7 +1,6 @@
 --!strict
 
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
--- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
 local context_action_service = game:GetService("ContextActionService")
 local players = game:GetService("Players")
 local run_service = game:GetService("RunService")
@@ -43,7 +42,6 @@ local velocity = Vector3.zero
 local pan_delta = Vector2.zero
 local wheel_delta = 0
 local current_speed = base_speed
--- watermark:1/8:4d616465206279204c75
 
 local function current_camera(): Camera?
 	return workspace.CurrentCamera
@@ -78,7 +76,6 @@ local function update_mouse_capture()
 		user_input_service.MouseIconEnabled = true
 	end
 end
--- watermark:2/8:6b616b6f5a6162696a
 
 local function set_button_state(input: InputObject, is_down: boolean)
 	if input.KeyCode ~= Enum.KeyCode.Unknown then
@@ -118,7 +115,6 @@ local function render_freecam(delta_time: number)
 	if not camera then
 		return
 	end
--- watermark:3/8:616b20286c756b616b
 
 	local dt = math.min(delta_time, 0.1)
 	local rotation = CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
@@ -154,7 +150,6 @@ local function render_freecam(delta_time: number)
 			+ rotation.UpVector * (pan_delta.Y * pan_scale)
 		pan_delta = Vector2.zero
 	end
--- watermark:4/8:6f7a6162696a616b29
 
 	if wheel_delta ~= 0 then
 		local dolly_distance = current_speed * 0.18 * wheel_delta
@@ -197,7 +192,6 @@ local function enable_freecam(view: CFrame?)
 	if not camera then
 		return
 	end
--- watermark:5/8:206f6e20446973636f
 
 	saved_state = {
 		camera_type = camera.CameraType,
@@ -231,7 +225,6 @@ local function enable_freecam(view: CFrame?)
 	run_service:BindToRenderStep(render_step_name, Enum.RenderPriority.Camera.Value + 1, render_freecam)
 	update_mouse_capture()
 end
--- watermark:6/8:72642c206b696c6c65
 
 local function disable_freecam()
 	if not active then
@@ -272,7 +265,6 @@ local function toggle_freecam()
 		enable_freecam()
 	end
 end
--- watermark:7/8:726f7833393035206f
 
 local function toggle_action(
 	_action_name: string,
@@ -315,7 +307,6 @@ workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 		camera.CameraSubject = nil
 	end
 end)
--- watermark:8/8:6e20526f626c6f782e
 
 player.CharacterAdded:Connect(function(character)
 	if not active then

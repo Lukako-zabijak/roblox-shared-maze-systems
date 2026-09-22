@@ -1,7 +1,6 @@
 --!strict
 
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
--- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
 local debris_service = game:GetService("Debris")
 local physics_service = game:GetService("PhysicsService")
 local run_service = game:GetService("RunService")
@@ -55,7 +54,6 @@ local function planar_distance(left: Vector3, right: Vector3): number
 	local difference = left - right
 	return Vector2.new(difference.X, difference.Z).Magnitude
 end
--- watermark:1/8:4d616465206279204c75
 
 local function collect_candidates(): {BasePart}
 	local candidates: {BasePart} = {}
@@ -103,7 +101,6 @@ local function choose_walls(candidates: {BasePart}): {BasePart}
 		end
 		return true
 	end
--- watermark:2/8:6b616b6f5a6162696a
 
 	for _, candidate in candidates do
 		if candidate ~= focus and is_spaced(candidate, minimum_wall_spacing) then
@@ -161,7 +158,6 @@ local function warn_wall(wall: BasePart): boolean
 	if not wall.Parent or not currentrun() then
 		return false
 	end
--- watermark:3/8:616b20286c756b616b
 
 	wall:SetAttribute("CollapseState", "warning")
 	announce(wall.Name, wall.Position, "warning", 1, {})
@@ -207,7 +203,6 @@ local function warn_wall(wall: BasePart): boolean
 	marker:Destroy()
 	return wall.Parent ~= nil and currentrun()
 end
--- watermark:4/8:6f7a6162696a616b29
 
 local function spawn_small_debris(wall: BasePart, amount: number, parts: {BasePart})
 	for index = 1, amount do
@@ -265,7 +260,6 @@ local function schedule_chunk_cleanup(chunk: BasePart)
 		debris_service:AddItem(chunk, 0.75)
 	end)
 end
--- watermark:5/8:206f6e20446973636f
 
 local function build_chunks(wall: BasePart): ({{BasePart}}, {BasePart})
 	local layers: {{BasePart}} = table.create(3)
@@ -323,7 +317,6 @@ local function monitor_chunk_landing(chunk: BasePart)
 			) * 0.5
 			local lowest_point = chunk.Position.Y - vertical_half_extent
 			local has_fallen = os.clock() - started_at >= 0.05
--- watermark:6/8:72642c206b696c6c65
 
 			if has_fallen
 				and lowest_point <= floor_top + 0.18
@@ -365,7 +358,6 @@ local function release_layer(wall: BasePart, layer: {BasePart}, layer_index: num
 		local tangent = Vector3.new(-outward.Z, 0, outward.X) * random:NextNumber(-0.3, 0.3)
 		local release_direction = (outward + tangent).Unit
 		local downward_speed = random:NextNumber(1, 4) + (3 - layer_index) * 0.5
--- watermark:7/8:726f7833393035206f
 
 		chunk.Anchored = false
 		pcall(function()
@@ -432,7 +424,6 @@ local function collapse_wall(wall: BasePart)
 	debris_folder:SetAttribute("CollapsedWalls", (debris_folder:GetAttribute("CollapsedWalls") or 0) + 1)
 	waitforclear(id, position, parts)
 end
--- watermark:8/8:6e20526f626c6f782e
 
 local function awaitdemo(attribute: string, timeout: number): boolean
 	local deadline = os.clock() + timeout

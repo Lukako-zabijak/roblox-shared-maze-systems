@@ -1,0 +1,82 @@
+-- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+local checks = 0
+local function check(condition: boolean, message: string)
+	assert(condition, message)
+	checks += 1
+end
+
+local map = newgrid(5, 3)
+local before, beforecost = findroute(map, 6, 10)
+check(table.find(before, 8) ~= nil, "initial route should use the middle passage")
+check(discover(map, 8, true), "first observation must update knowledge")
+local after, aftercost = findroute(map, 6, 10)
+check(#after > 0 and not table.find(after, 8), "a peer must route around the scout's blockage")
+check(aftercost > beforecost, "the blockage must cause a real detour")
+local revision = map.revision
+check(not discover(map, 8, true) and map.revision == revision, "duplicate observations must not invalidate routes")
+discover(map, 8, false)
+local reopened, reopenedcost = findroute(map, 6, 10)
+check(table.find(reopened, 8) ~= nil and reopenedcost < aftercost, "opening should restore the shortcut")
+for _, cell in {3, 8, 13} do discover(map, cell, true) end
+local unavailable, cost = findroute(map, 6, 10)
+check(#unavailable == 0 and cost == math.huge, "unreachable goal must return no route")
+local arrived = findroute(map, 6, 6)
+check(#arrived == 1 and arrived[1] == 6, "start at goal")
+check(cellat(map, -1, 0) == nil and cellat(map, 5, 0) == nil, "grid bounds")
+check(not table.find(neighbors(map, 5), 6), "rows must not wrap")
+
+-- compare against an independent exhaustive shortest-path search on small maps
+local random = Random.new(79231)
+for trial = 1, 100 do
+	local sample = newgrid(8, 8)
+	for cell = 2, 63 do
+		local roll = random:NextNumber()
+		if roll < 0.3 then discover(sample, cell, true)
+		elseif roll < 0.7 then discover(sample, cell, false) end
+	end
+	local costs: {[number]: number} = {[1] = 0}
+	local visited: {[number]: boolean} = {}
+	for _ = 1, 64 do
+		local best = nil
+		local bestcost = math.huge
+		for cell = 1, 64 do
+			if not visited[cell] and (costs[cell] or math.huge) < bestcost then
+				best, bestcost = cell, costs[cell]
+			end
+		end
+		if not best then break end
+		visited[best] = true
+		for cell = 1, 64 do
+			local x, z = (cell - 1) % 8, math.floor((cell - 1) / 8)
+			local bx, bz = (best - 1) % 8, math.floor((best - 1) / 8)
+			local known = sample.cells[cell]
+			if math.abs(x - bx) + math.abs(z - bz) == 1 and not (known and known.blocked) then
+				costs[cell] = math.min(costs[cell] or math.huge, bestcost + (if known then 1 else 1.15))
+			end
+		end
+	end
+	local route, actual = findroute(sample, 1, 64)
+	local expected = costs[64] or math.huge
+	check(actual == expected or math.abs(actual - expected) < 0.00001, "planner disagrees with exhaustive search")
+	if #route > 0 then
+		check(route[1] == 1 and route[#route] == 64, "route endpoints")
+		for index = 2, #route do
+			local known = sample.cells[route[index]]
+			check(distance(sample, route[index - 1], route[index]) == 1 and not (known and known.blocked), "route crosses blocked or nonadjacent cell")
+		end
+	end
+end
+local shortcutmap = newgrid(5, 3)
+for cell = 1, 15 do discover(shortcutmap, cell, false) end
+discover(shortcutmap, 8, true)
+local detour, detourcost = findroute(shortcutmap, 6, 10)
+check(routecost(shortcutmap, detour, 1) == detourcost, "remaining route cost disagrees")
+check(not couldshorten(shortcutmap, 6, 15, 10, 4), "irrelevant opening should not queue a search")
+check(couldshorten(shortcutmap, 6, 8, 10, detourcost), "useful opening must queue a search")
+discover(shortcutmap, 8, false)
+local shorter, shortcost = findroute(shortcutmap, 6, 10)
+check(shortcost < detourcost and table.find(shorter, 8) ~= nil, "cleared wall must shorten the detour")
+check(routecost(shortcutmap, detour, 2) == detourcost - 1, "completed route prefix counted twice")
+discover(shortcutmap, detour[3], true)
+check(routecost(shortcutmap, detour, 1) == math.huge, "blocked remaining route was considered valid")
+return checks

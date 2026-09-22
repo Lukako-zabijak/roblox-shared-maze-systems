@@ -18,16 +18,16 @@ Line references below match the submission overhaul
 
 | Main script lines | Read for | Main point to explain |
 | --- | --- | --- |
-| 14-49 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
-| 51-91 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
-| 94-104 | Discovery and revision | Repeating the same observation does not invalidate routes again |
-| 107-174 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
-| 177-281 | Roblox adapter | Convert between floor-relative cells and world positions |
-| 283-375 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
-| 377-473 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
-| 476-606 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
-| 608-746 | Debris and collapse events | Check physical clearance, event order and current-run identity |
-| 748-878 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
+| 13-48 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
+| 50-90 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
+| 92-102 | Discovery and revision | Repeating the same observation does not invalidate routes again |
+| 105-172 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
+| 175-277 | Roblox adapter | Convert between floor-relative cells and world positions |
+| 279-370 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
+| 372-468 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
+| 470-599 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
+| 601-737 | Debris and collapse events | Check physical clearance, event order and current-run identity |
+| 739-869 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
 
 ## 1. How the map represents knowledge
 
@@ -111,7 +111,7 @@ The controller updates at a configured interval of 0.16 seconds and permits at m
 
 Nesting is how many control blocks a reader must stay inside at once. The main script uses early returns and `continue` for invalid or irrelevant cases, then keeps the useful path at a shallower indentation level. Arrival checks, recovery, route comparison and event validation have named functions with separate responsibilities.
 
-Examples to point to are `publish` at line 283, `maintainmove` at line 513, `update` at line 568 and `worldchanged` at line 675. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
+Examples to point to are `publish` at line 279, `maintainmove` at line 507, `update` at line 561 and `worldchanged` at line 667. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
 
 ## 9. Viewer readiness and repeatable demonstrations
 
