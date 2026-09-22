@@ -1,7 +1,6 @@
 --!strict
 
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
--- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
 export type rig = {model: Model, humanoid: Humanoid, root: BasePart, markers: {{BasePart}}, raycastparams: RaycastParams}
 local physicsservice = game:GetService("PhysicsService")
 local agentcollisiongroup = "MazeAgents"
@@ -59,7 +58,6 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 			end
 		end
 	end
--- watermark:1/8:4d616465206279204c75
 
 	local function gridkey(xindex: number, zindex: number): string
 		return string.format("%d:%d", xindex, zindex)
@@ -102,7 +100,6 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 		local queue = {{goalx, goalz}}
 		local reachable = {[gridkey(goalx, goalz)] = true}
 		local queueindex = 1
--- watermark:2/8:6b616b6f5a6162696a
 
 		while queueindex <= #queue do
 			local cell = queue[queueindex]
@@ -150,7 +147,6 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 			local swapindex = random:NextInteger(1, index)
 			points[index], points[swapindex] = points[swapindex], points[index]
 		end
--- watermark:3/8:616b20286c756b616b
 
 		local maximumgoaldistance = 0
 		for _, point in points do
@@ -195,7 +191,6 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 				tryselect(point)
 			end
 		end
--- watermark:4/8:6f7a6162696a616b29
 
 		if #selectedpoints < #models then
 			warn(string.format("[maze agents] spacing fallback: selected %d of %d agents", #selectedpoints, #models))
@@ -253,7 +248,6 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 			model:SetAttribute("SpawnGoalDistance", (position - goal.Position).Magnitude)
 		end
 	end
--- watermark:5/8:206f6e20446973636f
 
 	local function createmarkers(model: Model): {{BasePart}}
 		local existing = model:FindFirstChild("PathScanMarkers")
@@ -298,7 +292,6 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 		if existing then
 			existing:Destroy()
 		end
--- watermark:6/8:72642c206b696c6c65
 
 		local collider = Instance.new("Part")
 		collider.Name = "NavigationCollider"
@@ -353,7 +346,6 @@ function module.start(maze: Instance, agentsfolder: Instance): {rig}
 				end
 			end
 		end
--- watermark:7/8:726f7833393035206f
 
 		local raycastparams = RaycastParams.new()
 		raycastparams.FilterType = Enum.RaycastFilterType.Exclude
@@ -397,7 +389,6 @@ function module.clear(state: rig)
     end
     table.clear(state.markers)
 end
--- watermark:8/8:6e20526f626c6f782e
 
 -- green follows the next movement target, cyan is the short pulse for a shared discovery
 function module.draw(state: rig, target: Vector3, sharedelapsed: number)
