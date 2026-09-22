@@ -2,15 +2,15 @@
 
 **One learns. All know.** A Roblox maze demonstration where 15 agents share discoveries, change their routes, and use passages opened by collapsing walls
 
-[Read the main script](ServerScriptService/MazeAgentController%20%28Server%29.luau) · [Play the demo](https://www.roblox.com/games/113425488924507/PathfindPractice) · [Code walkthrough](docs/navigation.md)
+[Read the main script](ServerScriptService/mazeagentcontroller%20%28server%29.luau) · [Play the demo](https://www.roblox.com/games/113425488924507/PathfindPractice) · [Code walkthrough](docs/navigation.md)
 
 ## start here
 
-The main example is **MazeAgentController (Server).luau** — one 878-line script with 730 nonblank, noncomment code lines
+The main example is **mazeagentcontroller (server).luau** — one 878-line script with 730 nonblank, noncomment code lines
 It contains the grid search, shared map, replanning, movement recovery and collapse-event handling
 The other files support the authored rigs, wall physics, HUD and camera
 
-For a direct code-file link, use [MazeAgentController on GitHub](https://github.com/Lukako-zabijak/roblox-shared-maze-systems/blob/main/ServerScriptService/MazeAgentController%20%28Server%29.luau)
+For a direct code-file link, use [mazeagentcontroller on GitHub](https://github.com/Lukako-zabijak/roblox-shared-maze-systems/blob/main/ServerScriptService/mazeagentcontroller%20%28server%29.luau)
 
 ## watch the demonstration
 
@@ -72,29 +72,29 @@ The colored raycast probes show direction and clearance; body-space overlap quer
 
 | Start at | Topic |
 | --- | --- |
-| [Line 14](ServerScriptService/MazeAgentController%20%28Server%29.luau#L14) | Grid coordinates, bounds and neighbors |
-| [Line 51](ServerScriptService/MazeAgentController%20%28Server%29.luau#L51) | Binary heap operations |
-| [Line 122](ServerScriptService/MazeAgentController%20%28Server%29.luau#L122) | A* search and unknown-cell costs |
-| [Line 283](ServerScriptService/MazeAgentController%20%28Server%29.luau#L283) | Publishing shared discoveries |
-| [Line 377](ServerScriptService/MazeAgentController%20%28Server%29.luau#L377) | Route comparisons and demonstration evidence |
-| [Line 476](ServerScriptService/MazeAgentController%20%28Server%29.luau#L476) | Movement recovery and crossing checks |
-| [Line 620](ServerScriptService/MazeAgentController%20%28Server%29.luau#L620) | Rotated debris footprints |
-| [Line 675](ServerScriptService/MazeAgentController%20%28Server%29.luau#L675) | Collapse-event validation |
-| [Line 748](ServerScriptService/MazeAgentController%20%28Server%29.luau#L748) | Cleanup and scheduling |
+| [Line 14](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L14) | Grid coordinates, bounds and neighbors |
+| [Line 51](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L51) | Binary heap operations |
+| [Line 122](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L122) | A* search and unknown-cell costs |
+| [Line 283](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L283) | Publishing shared discoveries |
+| [Line 377](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L377) | Route comparisons and demonstration evidence |
+| [Line 476](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L476) | Movement recovery and crossing checks |
+| [Line 620](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L620) | Rotated debris footprints |
+| [Line 675](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L675) | Collapse-event validation |
+| [Line 748](ServerScriptService/mazeagentcontroller%20%28server%29.luau#L748) | Cleanup and scheduling |
 
 [The walkthrough](docs/navigation.md) explains the reasoning, state transitions and tradeoffs in more detail
 
 ## files and Studio placement
 
-Repository filenames retain their original paths; use the actual Studio names below
+Script filenames are lowercase; the table maps them to the actual Studio names
 
 | Repository file | Studio location | Type |
 | --- | --- | --- |
-| [MazeAgentController (Server).luau](ServerScriptService/MazeAgentController%20%28Server%29.luau) | `ServerScriptService.MazeAgentController` | Script |
-| [MazeCollapseController (Server).luau](ServerScriptService/MazeCollapseController%20%28Server%29.luau) | `ServerScriptService.maze_collapse_controller` | Script |
+| [mazeagentcontroller (server).luau](ServerScriptService/mazeagentcontroller%20%28server%29.luau) | `ServerScriptService.MazeAgentController` | Script |
+| [mazecollapsecontroller (server).luau](ServerScriptService/mazecollapsecontroller%20%28server%29.luau) | `ServerScriptService.maze_collapse_controller` | Script |
 | [mazerigs.luau](ServerScriptService/mazerigs.luau) | `ServerScriptService.mazerigs` | ModuleScript |
-| [MazeKnowledgeController (Client).luau](StarterGui/MazeKnowledgeGui/MazeKnowledgeController%20%28Client%29.luau) | `StarterGui.maze_knowledge_gui.controller` | LocalScript |
-| [FreecamController (Client).luau](StarterPlayer/StarterPlayerScripts/FreecamController%20%28Client%29.luau) | `StarterPlayer.StarterPlayerScripts.freecam_controller` | LocalScript |
+| [mazeknowledgecontroller (client).luau](StarterGui/MazeKnowledgeGui/mazeknowledgecontroller%20%28client%29.luau) | `StarterGui.maze_knowledge_gui.controller` | LocalScript |
+| [freecamcontroller (client).luau](StarterPlayer/StarterPlayerScripts/freecamcontroller%20%28client%29.luau) | `StarterPlayer.StarterPlayerScripts.freecam_controller` | LocalScript |
 
 These files use the authored maze, agents and UI from PathfindPractice
 They depend on `Workspace.Maze` with `MazeFloor`, `GoalPad` and the authored walls, `Workspace.MazeAgents`, and the two events listed above

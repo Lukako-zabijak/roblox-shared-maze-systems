@@ -1,6 +1,6 @@
 # Navigation walkthrough
 
-Source: [main navigation script](../ServerScriptService/MazeAgentController%20%28Server%29.luau)
+Source: [main navigation script](../ServerScriptService/mazeagentcontroller%20%28server%29.luau)
 
 Line references below match the submission overhaul
 
