@@ -3,7 +3,9 @@
 --!strict
 
 -- mazerigs sets up the authored rigs and probes, movement and shared knowledge stay here
--- the collapse controller reports physical changes, the client hud only displays the messages
+-- the collapse controller owns the wall physics and replay timing, this script checks what agents can use
+-- the hud shows messages and says when a viewer is ready, it cannot send routes or discoveries
+-- mazerigs picks valid spawns from the authored maze, but that wall map never fills in our shared knowledge
 
 -- a missing cell is still unknown, false means checked clear rather than missing
 type discovery = {blocked: boolean}
@@ -24,6 +26,7 @@ local function cellat(map: grid, x: number, z: number): number?
 	if x < 0 or z < 0 or x >= map.width or z >= map.height then
 		return nil
 	end
+	-- reject out-of-bounds coordinates above so stepping off a row cannot wrap into the next one
 	return z * map.width + x + 1
 end
 
@@ -130,6 +133,7 @@ local function findroute(map: grid, start: number, goal: number): ({number}, num
 		if current.cost ~= costs[current.cell] then
 			continue
 		end
+		-- the goal is settled when popped, finding it as a neighbor could still leave a cheaper route waiting
 		if current.cell == goal then
 			return retrace(previous, start, goal), current.cost
 		end
@@ -141,6 +145,7 @@ local function findroute(map: grid, start: number, goal: number): ({number}, num
 			-- unknown doesn't mean blocked, otherwise nobody would leave the starting cell
 			-- give it a small extra cost so a checked passage is preferred when routes are close
 			local cost = current.cost + (if known then 1 else 1.15)
+			-- no saved cost means we have not reached this cell yet, infinity lets the first route through
 			if cost >= (costs[cell] or math.huge) then
 				continue
 			end
@@ -283,6 +288,7 @@ local function publish(cell: number, blocked: boolean, source: string, now: numb
 	if not discover(map, cell, blocked) then
 		return
 	end
+	-- learning an unknown cell is clear is not the same as removing a wall from a known route
 	local reopened = previous ~= nil and previous.blocked and not blocked
 	if cell == democell and blocked and not previous then
 		agents:SetAttribute("demoscout", source)
@@ -433,6 +439,7 @@ local function plan(state: agent, now: number)
 	local route, cost = findroute(map, state.anchor, goalcell :: number)
 	-- an opening is worth checking, but it doesn't automatically make a better route
 	if next(state.openings) and oldcost < math.huge and cost >= oldcost - 0.0001 then
+		-- copy just the remaining cells, keeping the old table intact until the comparisons below finish
 		route = table.move(oldroute, oldstart, #oldroute, 1, {})
 		cost = oldcost
 	end
@@ -487,6 +494,7 @@ local function recordcrossing(state: agent, now: number)
 end
 
 local function reachcell(state: agent, now: number)
+	-- check the entry and exit before replacing anchor, otherwise we lose the side we came from
 	recordcrossing(state, now)
 	if state.target == democell and state.anchor ~= democell then state.demoentry = state.anchor end
 	state.anchor = state.target
@@ -544,11 +552,13 @@ local function advance(state: agent, now: number): boolean
 		return false
 	end
 	local delta = state.rig.root.Position - worldpoint(state.target)
+	-- root height sits above the floor, only x/z tells us how close it is to this flat maze cell
 	local horizontal = Vector3.new(delta.X, 0, delta.Z).Magnitude
 	if horizontal <= reach then
 		reachcell(state, now)
 		return state.mode ~= "arrived"
 	end
+	-- tiny physics shifts should not keep a stuck rig alive, count only a useful step closer
 	if horizontal < state.best - 0.15 then
 		state.best = horizontal
 		state.progress = now
@@ -660,6 +670,7 @@ local function setgate(cell: number, id: string, blocked: boolean)
 	local gate = gates[cell]
 	if not gate then return end
 	gate[id] = nil
+	-- publish checks whether the entry exists, so an empty table must go too
 	if not next(gate) then gates[cell] = nil end
 end
 
@@ -676,6 +687,7 @@ local function worldchanged(payload: unknown)
 	if phases[data.phase] ~= data.revision then return end
 	if typeof(data.position) ~= "Vector3" or typeof(data.parts) ~= "table" or #data.parts > 64 then return end
 	local position = data.position :: Vector3
+	-- nan is unequal to itself, reject it and infinity before turning coordinates into table keys
 	if position.X ~= position.X or position.Z ~= position.Z or math.abs(position.X) == math.huge or math.abs(position.Z) == math.huge then return end
 	local cell = cellfromworld(position)
 	if not cell then return end
@@ -704,6 +716,7 @@ local function worldchanged(payload: unknown)
 	collapses[data.id] = record
 	setgate(cell, data.id, data.phase ~= "cleared")
 	local cells = footprint(record)
+	-- include the old footprint too, those cells may need to be marked clear after a piece moved
 	if previous then
 		for oldcell in previous.footprint do cells[oldcell] = true end
 	end
@@ -804,6 +817,7 @@ local function reset()
 	table.clear(collapses)
 	table.clear(gates)
 	table.clear(map.cells)
+	-- each run learns the maze again, but keep ready viewers and the message serial across replays
 	map.revision = 0
 	generation = nil
 	started = false
@@ -833,6 +847,7 @@ table.insert(connections, runservice.Heartbeat:Connect(function(dt)
 	if not running or elapsed < interval then
 		return
 	end
+	-- after a slow frame, do one update rather than a burst of catch-up searches
 	elapsed = 0
 	local now = os.clock()
 	if not started then
@@ -861,6 +876,7 @@ table.insert(connections, runservice.Heartbeat:Connect(function(dt)
 		publish(cell, part ~= nil, "debris cleared", now)
 	end
 	for _, state in states do
+		-- update still runs with no search slots left, movement and recovery cannot wait on the planner
 		if update(state, now) and budget > 0 then
 			budget -= 1
 			plan(state, now)

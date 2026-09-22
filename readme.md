@@ -18,7 +18,7 @@ Camera: WASD to move, E/Q for height, right mouse to look, middle mouse to pan, 
 
 ## Code
 
-The main example is one **869-line Luau script with 730 nonblank, noncomment code lines**. It combines A* with a binary heap, a partially known shared grid, selective replanning, bounded movement recovery and collapse-event validation
+The main example is one **885-line Luau script with 730 nonblank, noncomment code lines**. It combines A* with a binary heap, a partially known shared grid, selective replanning, bounded movement recovery and collapse-event validation
 
 Routes are calculated at runtime. Starting positions and the first collapse are staged to make the interaction visible
 
