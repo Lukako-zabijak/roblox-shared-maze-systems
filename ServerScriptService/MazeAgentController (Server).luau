@@ -1,1127 +1,794 @@
--- Made by LukakoZabijak (lukakozabijak) on discord, killerox3905 on Roblox.
+-- discord: lukakozabijak | roblox: killerox3905
+-- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
 --!strict
 
-local pfs = game:GetService("PathfindingService")
-local ps = game:GetService("PhysicsService")
-local rs = game:GetService("ReplicatedStorage")
-local ss = game:GetService("ServerStorage")
+-- mazerigs sets up the authored rigs and probes, movement and shared knowledge stay here
+-- the collapse controller reports physical changes, the client hud only displays the messages
 
-local existing_world_changed_event = ss:FindFirstChild("maze_world_changed")
-if existing_world_changed_event and not existing_world_changed_event:IsA("BindableEvent") then
-	error("[maze agents] serverstorage.maze_world_changed must be a bindableevent")
-end
-local world_changed_event: BindableEvent
-if existing_world_changed_event then
-	world_changed_event = existing_world_changed_event :: BindableEvent
-else
-	world_changed_event = Instance.new("BindableEvent")
-	world_changed_event.Name = "maze_world_changed"
-	world_changed_event.Parent = ss
+type discovery = {blocked: boolean}
+type grid = {width: number, height: number, revision: number, cells: {[number]: discovery}}
+type entry = {cell: number, cost: number, score: number}
+
+local function newgrid(width: number, height: number): grid
+	assert(width > 0 and height > 0, "grid dimensions must be positive")
+	return {width = width, height = height, revision = 0, cells = {}}
 end
 
-local existing_knowledge_event = rs:FindFirstChild("maze_knowledge_event")
-if existing_knowledge_event and not existing_knowledge_event:IsA("RemoteEvent") then
-	error("[maze agents] replicatedstorage.maze_knowledge_event must be a remoteevent")
-end
-local knowledge_event: RemoteEvent
-if existing_knowledge_event then
-	knowledge_event = existing_knowledge_event :: RemoteEvent
-else
-	knowledge_event = Instance.new("RemoteEvent")
-	knowledge_event.Name = "maze_knowledge_event"
-	knowledge_event.Parent = rs
+-- the table uses one id per tile, subtracting 1 makes the x/z calculation zero based
+local function coordinates(map: grid, cell: number): (number, number)
+	return (cell - 1) % map.width, math.floor((cell - 1) / map.width)
 end
 
-local agents_folder = workspace:WaitForChild("MazeAgents")
-local maze = workspace:WaitForChild("Maze")
-local goal = maze:WaitForChild("GoalPad") :: BasePart
-local maze_floor = maze:WaitForChild("MazeFloor") :: BasePart
-local marker_ground_y = maze_floor.Position.Y + maze_floor.Size.Y * 0.5 + 0.07
-
-local agent_collision_group = "MazeAgents"
-local navigation_decor_collision_group = "MazeNavigationDecor"
-local repath_delay = 0.05
-local path_failure_delay = 0.35
-local waypoint_timeout = 3
-local stuck_timeout = 1.1
-local scan_interval = 0.16
-local scan_distance = 14
-local probe_dot_spacing = 2.2
-local probe_dot_count = 6
-local minimum_spawn_spacing = 32
-local far_side_agent_count = 4
-local obstacle_lookahead = 5.5
-local body_query_size = Vector3.new(2.2, 4.5, 2.2)
-local body_query_offset = Vector3.new(0, -0.45, 0)
-local cruise_speed = 13
-local corner_speed = 10.5
-local straight_reach_radius = 1.35
-local corner_reach_radius = 0.8
-local scan_angles = {-72, -48, -24, 0, 24, 48, 72}
-local correct_color = Color3.fromRGB(55, 255, 120)
-local wrong_color = Color3.fromRGB(255, 62, 72)
-local shared_color = Color3.fromRGB(53, 217, 255)
-local memory_cell_size = 12
-local memory_direction_count = 16
-local memory_lifetime = 30
-local knowledge_broadcast_interval = 4.2
-
-type memory_observation = {
-	status: string,
-	updated_at: number,
-}
-
-type memory_entry = {
-	observations: {[string]: memory_observation},
-	status: string,
-	updated_at: number,
-	source: string,
-}
-
-type known_memory_entry = {
-	status: string,
-	source: string,
-	updated_at: number,
-	version: number,
-}
-
-type communication_message = {
-	version: number,
-	key: string,
-	status: string,
-	source_name: string,
-	expected_receivers: number,
-	acknowledged_receivers: number,
-	ui_sent: boolean,
-}
-
-type agent_state = {
-	model: Model,
-	humanoid: Humanoid,
-	root: BasePart,
-	markers: {{BasePart}},
-	raycast_params: RaycastParams,
-	overlap_params: OverlapParams,
-	active_path: Path?,
-	blocked_connection: RBXScriptConnection?,
-	waypoints: {PathWaypoint},
-	waypoint_index: number,
-	route_version: number,
-	needs_repath: boolean,
-	last_scan: number,
-	scan_target: Vector3,
-	avoidance_until: number,
-	next_obstacle_repath: number,
-	shared_flash_started: number,
-	last_received_version: number,
-	arrived: boolean,
-	knowledge_inbox: {communication_message},
-	known_memory: {[string]: known_memory_entry},
-	received_message_count: number,
-}
-
-local states: {agent_state} = {}
-local shared_memory: {[string]: memory_entry} = {}
-local shared_memory_version = 0
-local next_knowledge_broadcast_at = 0
-local published_message_count = 0
-local acknowledged_message_count = 0
-
-local function configure_collision_group()
-	pcall(function()
-		ps:RegisterCollisionGroup(agent_collision_group)
-	end)
-	pcall(function()
-		ps:RegisterCollisionGroup(navigation_decor_collision_group)
-	end)
-	ps:CollisionGroupSetCollidable(agent_collision_group, agent_collision_group, false)
-	ps:CollisionGroupSetCollidable(agent_collision_group, navigation_decor_collision_group, false)
-end
-
-local function configure_navigation_decor()
-	local floor_top = maze_floor.Position.Y + maze_floor.Size.Y * 0.5
-	local half_floor = maze_floor.Size * 0.5
-	for _, descendant in workspace:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant ~= maze_floor and not descendant:IsDescendantOf(agents_folder) then
-			local local_position = maze_floor.CFrame:PointToObjectSpace(descendant.Position)
-			local bottom = descendant.Position.Y - descendant.Size.Y * 0.5
-			local top = descendant.Position.Y + descendant.Size.Y * 0.5
-			local is_inside_maze = math.abs(local_position.X) <= half_floor.X and math.abs(local_position.Z) <= half_floor.Z
-			local is_thin_overlay = descendant.Size.Y <= 2 and descendant.Size.X <= 16 and descendant.Size.Z <= 16
-			local is_on_floor = bottom <= floor_top + 0.2 and top <= floor_top + 2.1
-			if is_inside_maze and is_thin_overlay and is_on_floor then
-				descendant.CollisionGroup = navigation_decor_collision_group
-				descendant:SetAttribute("MazeNavigationDecor", true)
-			end
-		end
-	end
-end
-
-local function grid_key(x_index: number, z_index: number): string
-	return string.format("%d:%d", x_index, z_index)
-end
-
-local function collect_reachable_spawn_points(): {Vector3}
-	local walls = {}
-	local cell_size = nil
-	local min_x = math.huge
-	local max_x = -math.huge
-	local min_z = math.huge
-	local max_z = -math.huge
-
-	for _, child in maze:GetChildren() do
-		if child:IsA("BasePart") and string.find(child.Name, "Wall_", 1, true) == 1 then
-			table.insert(walls, child)
-			cell_size = cell_size or math.max(child.Size.X, child.Size.Z)
-			min_x = math.min(min_x, child.Position.X)
-			max_x = math.max(max_x, child.Position.X)
-			min_z = math.min(min_z, child.Position.Z)
-			max_z = math.max(max_z, child.Position.Z)
-		end
-	end
-
-	if not cell_size or #walls == 0 then
-		return {}
-	end
-
-	local x_count = math.round((max_x - min_x) / cell_size)
-	local z_count = math.round((max_z - min_z) / cell_size)
-	local blocked = {}
-	for _, wall in walls do
-		local x_index = math.round((wall.Position.X - min_x) / cell_size)
-		local z_index = math.round((wall.Position.Z - min_z) / cell_size)
-		blocked[grid_key(x_index, z_index)] = true
-	end
-
-	local goal_x = math.round((goal.Position.X - min_x) / cell_size)
-	local goal_z = math.round((goal.Position.Z - min_z) / cell_size)
-	local queue = {{goal_x, goal_z}}
-	local reachable = {[grid_key(goal_x, goal_z)] = true}
-	local queue_index = 1
-
-	while queue_index <= #queue do
-		local cell = queue[queue_index]
-		queue_index += 1
-		local x_index = cell[1]
-		local z_index = cell[2]
-		for _, offset in {{1, 0}, {-1, 0}, {0, 1}, {0, -1}} do
-			local next_x = x_index + offset[1]
-			local next_z = z_index + offset[2]
-			local key = grid_key(next_x, next_z)
-			if next_x >= 0 and next_x <= x_count and next_z >= 0 and next_z <= z_count
-				and not blocked[key] and not reachable[key] then
-				reachable[key] = true
-				table.insert(queue, {next_x, next_z})
-			end
-		end
-	end
-
-	local floor_top = maze_floor.Position.Y + maze_floor.Size.Y * 0.5
-	local points = {}
-	for x_index = 0, x_count do
-		for z_index = 0, z_count do
-			local key = grid_key(x_index, z_index)
-			if reachable[key] and not blocked[key] then
-				local point = Vector3.new(min_x + x_index * cell_size, floor_top + 3, min_z + z_index * cell_size)
-				local goal_difference = point - goal.Position
-				if Vector2.new(goal_difference.X, goal_difference.Z).Magnitude >= 24 then
-					table.insert(points, point)
-				end
-			end
-		end
-	end
-	return points
-end
-
-local function randomize_agent_spawns(models: {Model})
-	local random = Random.new()
-	local points = collect_reachable_spawn_points()
-	if #points < #models then
-		warn(string.format("[maze agents] only %d reachable random spawn cells were found", #points))
-		return
-	end
-
-	for index = #points, 2, -1 do
-		local swap_index = random:NextInteger(1, index)
-		points[index], points[swap_index] = points[swap_index], points[index]
-	end
-
-	local maximum_goal_distance = 0
-	for _, point in points do
-		local difference = point - goal.Position
-		maximum_goal_distance = math.max(maximum_goal_distance, Vector2.new(difference.X, difference.Z).Magnitude)
-	end
-	local far_side_threshold = maximum_goal_distance * 0.76
-	local selected_points = {}
-	local function try_select(point: Vector3): boolean
-		local is_spaced = true
-		for _, selected in selected_points do
-			local difference = point - selected
-			if Vector2.new(difference.X, difference.Z).Magnitude < minimum_spawn_spacing then
-				is_spaced = false
-				break
-			end
-		end
-		if is_spaced then
-			table.insert(selected_points, point)
-			return true
-		end
-		return false
-	end
-
-	local far_side_target = math.min(far_side_agent_count, #models)
-	for _, point in points do
-		local difference = point - goal.Position
-		local goal_distance = Vector2.new(difference.X, difference.Z).Magnitude
-		if goal_distance >= far_side_threshold then
-			try_select(point)
-			if #selected_points >= far_side_target then
-				break
-			end
-		end
-	end
-
-	for _, point in points do
-		if #selected_points >= #models then
-			break
-		end
-		if not table.find(selected_points, point) then
-			try_select(point)
-		end
-	end
-
-	if #selected_points < #models then
-		warn(string.format("[maze agents] spacing fallback: selected %d of %d agents", #selected_points, #models))
-		for _, point in points do
-			if #selected_points >= #models then
-				break
-			end
-			if not table.find(selected_points, point) then
-				table.insert(selected_points, point)
-			end
-		end
-	end
-
-	for index, model in models do
-		local base_position = selected_points[index]
-		local jitter = Vector3.new(random:NextNumber(-0.7, 0.7), 0, random:NextNumber(-0.7, 0.7))
-		local yaw = math.rad(random:NextInteger(0, 3) * 90)
-		local spawn_position = base_position + jitter
-		model:PivotTo(CFrame.new(spawn_position) * CFrame.Angles(0, yaw, 0))
-		model:SetAttribute("SpawnCellX", base_position.X)
-		model:SetAttribute("SpawnCellZ", base_position.Z)
-		local goal_difference = base_position - goal.Position
-		model:SetAttribute("SpawnGoalDistance", Vector2.new(goal_difference.X, goal_difference.Z).Magnitude)
-	end
-end
-
-local function disconnect_route(state: agent_state)
-	if state.blocked_connection then
-		state.blocked_connection:Disconnect()
-		state.blocked_connection = nil
-	end
-	state.active_path = nil
-	state.waypoints = {}
-	state.waypoint_index = 0
-end
-
-local function create_markers(model: Model): {{BasePart}}
-	local existing = model:FindFirstChild("PathScanMarkers")
-	if existing then
-		existing:Destroy()
-	end
-
-	local folder = Instance.new("Folder")
-	folder.Name = "PathScanMarkers"
-	folder.Parent = model
-
-	local markers = table.create(#scan_angles)
-	for direction_index = 1, #scan_angles do
-		local direction_folder = Instance.new("Folder")
-		direction_folder.Name = string.format("Direction_%02d", direction_index)
-		direction_folder.Parent = folder
-
-		local line = table.create(probe_dot_count)
-		for dot_index = 1, probe_dot_count do
-			local marker = Instance.new("Part")
-			marker.Name = string.format("Dot_%02d", dot_index)
-			marker.Shape = Enum.PartType.Cylinder
-			marker.Size = Vector3.new(0.1, 0.58, 0.58)
-			marker.Anchored = true
-			marker.CanCollide = false
-			marker.CanQuery = false
-			marker.CanTouch = false
-			marker.CastShadow = false
-			marker.Material = Enum.Material.Neon
-			marker.Color = wrong_color
-			marker.Transparency = 1
-			marker.Parent = direction_folder
-			line[dot_index] = marker
-		end
-		markers[direction_index] = line
-	end
-	return markers
-end
-
-local function create_navigation_collider(model: Model, root: BasePart): BasePart
-	local existing = model:FindFirstChild("NavigationCollider")
-	if existing then
-		existing:Destroy()
-	end
-
-	local collider = Instance.new("Part")
-	collider.Name = "NavigationCollider"
-	collider.Shape = Enum.PartType.Cylinder
-	collider.Size = Vector3.new(4.6, 2.35, 2.35)
-	collider.CFrame = root.CFrame * CFrame.new(0, -0.7, 0) * CFrame.Angles(0, 0, math.rad(90))
-	collider.Transparency = 1
-	collider.CanCollide = true
-	collider.CanTouch = false
-	collider.CanQuery = false
-	collider.CastShadow = false
-	collider.Massless = false
-	collider.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0, 0, 1, 1)
-	collider.Parent = model
-	local pathfinding_modifier = Instance.new("PathfindingModifier")
-	pathfinding_modifier.Name = "NavigationPassThrough"
-	pathfinding_modifier.PassThrough = true
-	pathfinding_modifier.Parent = collider
-
-	local weld = Instance.new("WeldConstraint")
-	weld.Name = "NavigationColliderWeld"
-	weld.Part0 = root
-	weld.Part1 = collider
-	weld.Parent = collider
-	return collider
-end
-
-local function configure_agent(model: Model): agent_state?
-	local humanoid = model:FindFirstChildOfClass("Humanoid")
-	local root = model:FindFirstChild("HumanoidRootPart")
-	if not humanoid or not root or not root:IsA("BasePart") then
-		warn(string.format("[maze agents] skipped invalid rig %s", model:GetFullName()))
+local function cellat(map: grid, x: number, z: number): number?
+	if x < 0 or z < 0 or x >= map.width or z >= map.height then
 		return nil
 	end
+	return z * map.width + x + 1
+end
 
-	model:SetAttribute("MazeAgent", true)
-	model:SetAttribute("PathState", "initializing")
-	model:SetAttribute("CommunicationState", "online")
-	model:SetAttribute("ReceivedKnowledgeMessages", 0)
-	model:SetAttribute("ScannerActive", true)
-	humanoid.WalkSpeed = cruise_speed
-	humanoid.AutoRotate = true
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
-	local collider = create_navigation_collider(model, root)
+-- each move crosses one grid edge, so manhattan distance is a lower bound on the cost left
+-- no diagonals here, they would cut through the corners of these walls
+local function distance(map: grid, left: number, right: number): number
+	local x, z = coordinates(map, left)
+	local otherx, otherz = coordinates(map, right)
+	return math.abs(x - otherx) + math.abs(z - otherz)
+end
 
-	for _, descendant in model:GetDescendants() do
-		if descendant:IsA("BasePart") then
-			if descendant ~= collider then
-				descendant.CanCollide = false
-			end
-			descendant.CollisionGroup = agent_collision_group
-			if not descendant.Anchored then
-				pcall(function()
-					descendant:SetNetworkOwner(nil)
-				end)
-			end
+local function neighbors(map: grid, cell: number): {number}
+	local x, z = coordinates(map, cell)
+	local result = {}
+	for _, offset in {{1, 0}, {0, 1}, {-1, 0}, {0, -1}} do
+		local nextcell = cellat(map, x + offset[1], z + offset[2])
+		if nextcell then
+			table.insert(result, nextcell)
 		end
 	end
-
-	local raycast_params = RaycastParams.new()
-	raycast_params.FilterType = Enum.RaycastFilterType.Exclude
-	raycast_params.FilterDescendantsInstances = {agents_folder}
-	raycast_params.RespectCanCollide = true
-	raycast_params.CollisionGroup = agent_collision_group
-
-	local overlap_params = OverlapParams.new()
-	overlap_params.FilterType = Enum.RaycastFilterType.Exclude
-	overlap_params.FilterDescendantsInstances = {agents_folder}
-	overlap_params.RespectCanCollide = true
-	overlap_params.CollisionGroup = agent_collision_group
-	overlap_params.MaxParts = 8
-
-	return {
-		model = model,
-		humanoid = humanoid,
-		root = root,
-		markers = create_markers(model),
-		raycast_params = raycast_params,
-		overlap_params = overlap_params,
-		active_path = nil,
-		blocked_connection = nil,
-		waypoints = {},
-		waypoint_index = 0,
-		route_version = 0,
-		needs_repath = false,
-		last_scan = 0,
-		scan_target = goal.Position,
-		avoidance_until = 0,
-		next_obstacle_repath = 0,
-		shared_flash_started = -math.huge,
-		last_received_version = 0,
-		arrived = false,
-		knowledge_inbox = {},
-		known_memory = {},
-		received_message_count = 0,
-	}
+	return result
 end
 
-local function flat_unit(vector: Vector3, fallback: Vector3): Vector3
-	local flat = Vector3.new(vector.X, 0, vector.Z)
-	if flat.Magnitude > 0.01 then
-		return flat.Unit
-	end
-	local fallback_flat = Vector3.new(fallback.X, 0, fallback.Z)
-	if fallback_flat.Magnitude > 0.01 then
-		return fallback_flat.Unit
-	end
-	return Vector3.new(0, 0, -1)
-end
-
-local function planar_distance(left: Vector3, right: Vector3): number
-	local difference = left - right
-	return Vector2.new(difference.X, difference.Z).Magnitude
-end
-
-local function rotate_flat(vector: Vector3, angle_degrees: number): Vector3
-	local angle = math.rad(angle_degrees)
-	local cosine = math.cos(angle)
-	local sine = math.sin(angle)
-	return Vector3.new(
-		vector.X * cosine - vector.Z * sine,
-		0,
-		vector.X * sine + vector.Z * cosine
-	)
-end
-
-local function memory_key(position: Vector3, direction: Vector3): string
-	local local_position = maze_floor.CFrame:PointToObjectSpace(position)
-	local x_index = math.round(local_position.X / memory_cell_size)
-	local z_index = math.round(local_position.Z / memory_cell_size)
-	local angle = math.atan2(direction.Z, direction.X)
-	local direction_step = math.pi * 2 / memory_direction_count
-	local direction_index = math.round(angle / direction_step)
-	return string.format("%d:%d:%d", x_index, z_index, direction_index)
-end
-
-local function summarize_memory(entry: memory_entry): string
-	local blocked_count = 0
-	local recommended_count = 0
-	local open_count = 0
-	for _, observation in entry.observations do
-		if observation.status == "blocked" then
-			blocked_count += 1
-		elseif observation.status == "recommended" then
-			recommended_count += 1
-		else
-			open_count += 1
+-- the heap keeps the cheapest estimate at index 1 without sorting the whole search each time
+local function push(heap: {entry}, item: entry)
+	local index = #heap + 1
+	while index > 1 do
+		local parent = math.floor(index / 2)
+		if heap[parent].score <= item.score then
+			break
 		end
+		heap[index] = heap[parent]
+		index = parent
 	end
-	if blocked_count >= math.max(1, recommended_count + open_count) then
-		return "blocked"
-	end
-	if recommended_count > 0 then
-		return "recommended"
-	end
-	return "open"
+	heap[index] = item
 end
 
-local function observe_memory(state: agent_state, direction: Vector3, status: string): (string?, string?)
-	local now = os.clock()
-	local key = memory_key(state.root.Position, direction)
-	local entry = shared_memory[key]
-	if entry and now - entry.updated_at > memory_lifetime then
-		shared_memory[key] = nil
-		entry = nil
+-- after taking the root, slide the cheaper child upward until the last entry fits
+local function pop(heap: {entry}): entry
+	local first = heap[1]
+	local last = table.remove(heap) :: entry
+	if #heap == 0 then
+		return first
 	end
-	if not entry then
-		entry = {
-			observations = {},
-			status = "unknown",
-			updated_at = now,
-			source = state.model.Name,
-		}
-		shared_memory[key] = entry
-	end
-
-	local previous_status = entry.status
-	entry.observations[state.model.Name] = {
-		status = status,
-		updated_at = now,
-	}
-	entry.status = summarize_memory(entry)
-	entry.updated_at = now
-	entry.source = state.model.Name
-	state.known_memory[key] = {
-		status = entry.status,
-		source = state.model.Name,
-		updated_at = now,
-		version = state.last_received_version,
-	}
-
-	if entry.status ~= previous_status and (entry.status == "blocked" or entry.status == "recommended") then
-		return entry.status, key
-	end
-	return nil, nil
-end
-
-local function read_memory(state: agent_state, direction: Vector3): (string?, string?)
-	local key = memory_key(state.root.Position, direction)
-	local entry = state.known_memory[key]
-	if not entry then
-		return nil, nil
-	end
-	if os.clock() - entry.updated_at > memory_lifetime then
-		state.known_memory[key] = nil
-		return nil, nil
-	end
-	return entry.status, entry.source
-end
-
-local function finalize_message(message: communication_message)
-	if message.ui_sent
-		or message.expected_receivers <= 0
-		or message.acknowledged_receivers < message.expected_receivers then
-		return
-	end
-
-	message.ui_sent = true
-	acknowledged_message_count += 1
-	agents_folder:SetAttribute("KnowledgeMessagesAcknowledged", acknowledged_message_count)
-	local discovery = if message.status == "blocked" then "a blocked route" else "a better route"
-	knowledge_event:FireAllClients({
-		message = string.format(
-			"%s shared %s - %d active dummies received it",
-			string.lower(message.source_name),
-			discovery,
-			message.expected_receivers
-		),
-		kind = message.status,
-		version = message.version,
-	})
-end
-
-local function discard_knowledge_inbox(state: agent_state)
-	for _, message in state.knowledge_inbox do
-		message.expected_receivers = math.max(0, message.expected_receivers - 1)
-		finalize_message(message)
-	end
-	table.clear(state.knowledge_inbox)
-end
-
-local function drain_knowledge_inbox(state: agent_state)
-	if state.arrived then
-		discard_knowledge_inbox(state)
-		return
-	end
-
-	local now = os.clock()
-	while #state.knowledge_inbox > 0 do
-		local message = table.remove(state.knowledge_inbox, 1)
-		state.known_memory[message.key] = {
-			status = message.status,
-			source = message.source_name,
-			updated_at = now,
-			version = message.version,
-		}
-		state.last_received_version = message.version
-		state.shared_flash_started = now
-		state.received_message_count += 1
-		state.model:SetAttribute("SharedMemoryVersion", message.version)
-		state.model:SetAttribute("LastKnowledgeSource", message.source_name)
-		state.model:SetAttribute("ReceivedKnowledgeMessages", state.received_message_count)
-		state.model:SetAttribute("CommunicationState", "online")
-		message.acknowledged_receivers += 1
-		finalize_message(message)
-	end
-end
-
-local function share_discovery(source_state: agent_state, status: string, key: string)
-	if source_state.arrived then
-		return
-	end
-
-	local now = os.clock()
-	if now < next_knowledge_broadcast_at then
-		return
-	end
-
-	local receivers: {agent_state} = {}
-	for _, receiver in states do
-		if receiver ~= source_state
-			and not receiver.arrived
-			and receiver.model.Parent
-			and receiver.humanoid.Health > 0 then
-			table.insert(receivers, receiver)
+	local index = 1
+	while index * 2 <= #heap do
+		local child = index * 2
+		if child < #heap and heap[child + 1].score < heap[child].score then
+			child += 1
 		end
-	end
-	if #receivers == 0 then
-		return
-	end
-
-	next_knowledge_broadcast_at = now + knowledge_broadcast_interval
-	shared_memory_version += 1
-	published_message_count += 1
-	local message: communication_message = {
-		version = shared_memory_version,
-		key = key,
-		status = status,
-		source_name = source_state.model.Name,
-		expected_receivers = #receivers,
-		acknowledged_receivers = 0,
-		ui_sent = false,
-	}
-
-	for _, receiver in receivers do
-		table.insert(receiver.knowledge_inbox, message)
-		receiver.model:SetAttribute("CommunicationState", "pending")
-	end
-
-	source_state.model:SetAttribute("KnowledgeSharedVersion", shared_memory_version)
-	agents_folder:SetAttribute("KnowledgeMessagesPublished", published_message_count)
-end
-
-local function handle_world_change(message: unknown, kind: unknown, should_repath: unknown)
-	if typeof(message) ~= "string" or typeof(kind) ~= "string" or #message > 140 then
-		return
-	end
-
-	local active_states: {agent_state} = {}
-	for _, state in states do
-		if not state.arrived and state.model.Parent and state.humanoid.Health > 0 then
-			table.insert(active_states, state)
+		if heap[child].score >= last.score then
+			break
 		end
+		heap[index] = heap[child]
+		index = child
 	end
-	if #active_states == 0 then
-		return
-	end
-
-	if should_repath == true then
-		table.clear(shared_memory)
-		shared_memory_version += 1
-		local now = os.clock()
-		for _, state in active_states do
-			table.clear(state.known_memory)
-			state.needs_repath = true
-			state.shared_flash_started = now
-			state.last_received_version = shared_memory_version
-			state.model:SetAttribute("SharedMemoryVersion", shared_memory_version)
-			state.model:SetAttribute("LastKnowledgeSource", "structural_change")
-		end
-	end
-
-	knowledge_event:FireAllClients({
-		message = message,
-		kind = kind,
-		version = shared_memory_version,
-	})
+	heap[index] = last
+	return first
 end
+-- watermark:1/8:4d616465206279204c75
 
-world_changed_event.Event:Connect(handle_world_change)
-
-local function find_body_overlap(state: agent_state): BasePart?
-	local query_cframe = CFrame.new(state.root.Position + body_query_offset)
-	for _, part in workspace:GetPartBoundsInBox(query_cframe, body_query_size, state.overlap_params) do
-		if part.CanCollide then
-			return part
-		end
-	end
-	return nil
-end
-
-local function find_forward_obstacle(state: agent_state, target: Vector3): (Instance?, Vector3?, Vector3?)
-	local difference = target - state.root.Position
-	local flat = Vector3.new(difference.X, 0, difference.Z)
-	if flat.Magnitude <= 0.1 then
-		return nil, nil, nil
-	end
-	local cast = flat.Unit * math.min(obstacle_lookahead, flat.Magnitude)
-	local closest_result: RaycastResult? = nil
-	for _, height_offset in {-2.2, -0.45, 1.3} do
-		local origin = state.root.Position + Vector3.new(0, height_offset, 0)
-		local result = workspace:Raycast(origin, cast, state.raycast_params)
-		if result and (not closest_result or result.Distance < closest_result.Distance) then
-			closest_result = result
-		end
-	end
-	if closest_result then
-		return closest_result.Instance, closest_result.Normal, closest_result.Position
-	end
-	return nil, nil, nil
-end
-
-local function choose_avoidance_target(state: agent_state, obstacle_position: Vector3, surface_normal: Vector3?): Vector3
-	local desired = flat_unit(state.scan_target - state.root.Position, state.root.CFrame.LookVector)
-	local away_vector = state.root.Position - obstacle_position
-	local away = flat_unit(away_vector, -desired)
-	if surface_normal then
-		local flat_normal = Vector3.new(surface_normal.X, 0, surface_normal.Z)
-		if flat_normal.Magnitude > 0.1 then
-			away = flat_normal.Unit
-		end
-	end
-	local tangent = Vector3.new(-away.Z, 0, away.X)
-	if tangent:Dot(desired) < 0 then
-		tangent = -tangent
-	end
-	local avoidance_direction = flat_unit(tangent * 0.85 + away * 0.55, away)
-	return state.root.Position + avoidance_direction * 4
-end
-
-local function monitor_obstacles(state: agent_state): boolean
-	local obstacle: Instance? = find_body_overlap(state)
-	local obstacle_position: Vector3? = if obstacle and obstacle:IsA("BasePart") then obstacle.Position else nil
-	local surface_normal: Vector3? = nil
-	if not obstacle then
-		obstacle, surface_normal, obstacle_position = find_forward_obstacle(state, state.scan_target)
-	end
-	if not obstacle then
-		state.model:SetAttribute("AvoidingObstacle", false)
+local function discover(map: grid, cell: number, blocked: boolean): boolean
+	assert(cell >= 1 and cell <= map.width * map.height, "discovery outside grid")
+	local previous = map.cells[cell]
+	-- another agent already checked this state, no need to invalidate routes again
+	if previous and previous.blocked == blocked then
 		return false
 	end
-
-	local now = os.clock()
-	local avoidance_target = choose_avoidance_target(state, obstacle_position or state.root.Position, surface_normal)
-	state.scan_target = avoidance_target
-	state.avoidance_until = now + 0.4
-	state.model:SetAttribute("AvoidingObstacle", true)
-	state.model:SetAttribute("ObstacleName", obstacle.Name)
-	state.model:SetAttribute("ObstacleClass", obstacle.ClassName)
-	state.model:SetAttribute("PathState", "avoiding_obstacle")
-	state.humanoid.WalkSpeed = cruise_speed
-	state.humanoid:MoveTo(avoidance_target)
-	if now >= state.next_obstacle_repath then
-		state.needs_repath = true
-		state.next_obstacle_repath = now + 0.45
-	end
+	map.revision += 1
+	map.cells[cell] = {blocked = blocked}
 	return true
 end
 
-local function probe_clearance(state: agent_state, direction: Vector3): (boolean, number)
-	local origin = state.root.Position + Vector3.new(0, 1.25, 0)
-	local side = Vector3.new(-direction.Z, 0, direction.X) * 0.8
-	local cast = direction * scan_distance
-	local minimum_clearance = scan_distance
-
-	for _, offset in {Vector3.zero, side, -side} do
-		local result = workspace:Raycast(origin + offset, cast, state.raycast_params)
-		if result then
-			minimum_clearance = math.min(minimum_clearance, result.Distance)
-		end
+-- parents point back toward the start, so reverse that chain before handing it to the mover
+local function retrace(previous: {[number]: number}, start: number, goal: number): {number}
+	local reversed = {goal}
+	local cell = goal
+	while cell ~= start do
+		cell = previous[cell]
+		table.insert(reversed, cell)
 	end
-
-	return minimum_clearance >= probe_dot_spacing * 1.8, minimum_clearance
+	local route = table.create(#reversed)
+	for index = #reversed, 1, -1 do
+		table.insert(route, reversed[index])
+	end
+	return route
 end
 
-local function update_scan(state: agent_state, next_position: Vector3, force: boolean?)
-	if state.arrived then
-		return
-	end
-	local now = os.clock()
-	if not force and now - state.last_scan < scan_interval then
-		return
-	end
-	state.last_scan = now
-
-	local desired = flat_unit(next_position - state.root.Position, state.root.CFrame.LookVector)
-	local forward = flat_unit(state.root.CFrame.LookVector, desired)
-	local probes = table.create(#scan_angles)
-	local best_index = nil
-	local best_score = -math.huge
-
-	for index, angle in scan_angles do
-		local direction = rotate_flat(forward, angle)
-		local is_locally_open, clearance = probe_clearance(state, direction)
-		local memory_status, memory_source = read_memory(state, direction)
-		local is_open = is_locally_open and memory_status ~= "blocked"
-		local score = direction:Dot(desired) * 10 + clearance * 0.08
-		if memory_status == "recommended" then
-			score += 3.5
-		elseif memory_status == "blocked" then
-			score -= 30
-		end
-		probes[index] = {
-			direction = direction,
-			is_open = is_open,
-			is_locally_open = is_locally_open,
-			clearance = clearance,
-			score = score,
-			memory_status = memory_status,
-			memory_source = memory_source,
-		}
-		if is_open and score > best_score then
-			best_score = score
-			best_index = index
-		end
-	end
-
-	local discovered_status: string? = nil
-	local discovered_key: string? = nil
-	for direction_index, probe in probes do
-		local observation = if not probe.is_locally_open
-			then "blocked"
-			elseif direction_index == best_index
-			then "recommended"
-			else "open"
-		local changed_status, changed_key = observe_memory(state, probe.direction, observation)
-		if changed_status and changed_key then
-			discovered_status = changed_status
-			discovered_key = changed_key
-		end
-	end
-	if discovered_status and discovered_key then
-		share_discovery(state, discovered_status, discovered_key)
-	end
-
-	for direction_index, probe in probes do
-		local is_correct = direction_index == best_index
-		local color = if is_correct then correct_color else wrong_color
-		local line = state.markers[direction_index]
-		for dot_index, marker in line do
-			local distance = dot_index * probe_dot_spacing
-			local candidate = state.root.Position + probe.direction * distance
-			local is_visible = distance <= probe.clearance + 0.15
-			local target_transparency = if not is_visible then 1 elseif is_correct then 0.06 else 0.16
-			local diameter = if is_correct then 0.68 else 0.58
-			local shared_elapsed = now - state.shared_flash_started
-			local pulse_time = (dot_index - 1) * 0.075
-			local is_shared_pulse = shared_elapsed >= pulse_time and shared_elapsed <= pulse_time + 0.18
-			local display_color = if is_shared_pulse then shared_color else color
-			marker.Color = marker.Color:Lerp(display_color, 0.62)
-			marker.Transparency += (target_transparency - marker.Transparency) * 0.62
-			marker.Size = marker.Size:Lerp(Vector3.new(0.1, diameter, diameter), 0.62)
-			marker.CFrame = CFrame.new(candidate.X, marker_ground_y, candidate.Z) * CFrame.Angles(0, 0, math.rad(90))
-		end
-	end
-
-	state.model:SetAttribute("OpeningsScanned", #scan_angles)
-	state.model:SetAttribute("CorrectProbe", best_index or 0)
-end
-
-local function compute_route(state: agent_state): boolean
-	disconnect_route(state)
-	state.needs_repath = false
-	state.route_version += 1
-	state.model:SetAttribute("PathState", "computing")
-	state.model:SetAttribute("RouteVersion", state.route_version)
-
-	local path = pfs:CreatePath({
-		AgentRadius = 2,
-		AgentHeight = 5,
-		AgentCanJump = false,
-		AgentCanClimb = false,
-		WaypointSpacing = 2.5,
-	})
-
-	local computed, error_message = pcall(function()
-		path:ComputeAsync(state.root.Position, goal.Position)
-	end)
-	if not computed then
-		state.model:SetAttribute("PathState", "compute_error")
-		state.model:SetAttribute("PathError", tostring(error_message))
-		return false
-	end
-	if path.Status ~= Enum.PathStatus.Success then
-		state.model:SetAttribute("PathState", "no_route")
-		state.model:SetAttribute("PathError", tostring(path.Status))
-		return false
-	end
-
-	local waypoints = path:GetWaypoints()
-	if #waypoints < 2 then
-		state.model:SetAttribute("PathState", "already_arrived")
-		return (state.root.Position - goal.Position).Magnitude <= 5
-	end
-
-	state.active_path = path
-	state.waypoints = waypoints
-	state.waypoint_index = 2
-	state.model:SetAttribute("PathState", "following")
-	state.model:SetAttribute("PathError", nil)
-	state.model:SetAttribute("WaypointCount", #waypoints)
-	state.blocked_connection = path.Blocked:Connect(function(blocked_index)
-		if blocked_index >= state.waypoint_index then
-			local current_waypoint = state.waypoints[state.waypoint_index]
-			if current_waypoint then
-				local obstacle = find_forward_obstacle(state, current_waypoint.Position)
-				if obstacle then
-					state.needs_repath = true
-				end
-			end
-		end
-	end)
-	state.scan_target = waypoints[2].Position
-	return true
-end
-
-local function waypoint_turn_angle(waypoints: {PathWaypoint}, index: number): number
-	local previous = waypoints[index - 1]
-	local current = waypoints[index]
-	local following = waypoints[index + 1]
-	if not previous or not current or not following then
-		return 0
-	end
-	local incoming = flat_unit(current.Position - previous.Position, Vector3.new(0, 0, -1))
-	local outgoing = flat_unit(following.Position - current.Position, incoming)
-	return math.deg(math.acos(math.clamp(incoming:Dot(outgoing), -1, 1)))
-end
-
-local function move_to_waypoint(state: agent_state, waypoint: PathWaypoint, reach_radius: number, is_corner: boolean): boolean
-	state.scan_target = waypoint.Position
-	state.humanoid.WalkSpeed = if is_corner then corner_speed else cruise_speed
-	if waypoint.Action == Enum.PathWaypointAction.Jump then
-		state.humanoid.Jump = true
-	end
-
-	local started_at = os.clock()
-	local last_progress_at = started_at
-	local last_move_command = started_at
-	if started_at >= state.avoidance_until then
-		state.humanoid:MoveTo(waypoint.Position)
-	end
-	local best_distance = planar_distance(state.root.Position, waypoint.Position)
-
-	while state.model.Parent and state.humanoid.Health > 0 do
-		local now = os.clock()
-		local distance = planar_distance(state.root.Position, waypoint.Position)
-		if distance <= reach_radius then
-			state.humanoid.WalkSpeed = cruise_speed
-			return true
-		end
-		if state.needs_repath then
-			state.humanoid.WalkSpeed = cruise_speed
-			return false
-		end
-		if distance < best_distance - 0.2 then
-			best_distance = distance
-			last_progress_at = now
-		end
-		if now >= state.avoidance_until and now - last_move_command >= 0.45 then
-			state.humanoid:MoveTo(waypoint.Position)
-			last_move_command = now
-		end
-		if now >= state.avoidance_until and now - last_progress_at >= stuck_timeout then
-			state.model:SetAttribute("PathState", "recovering")
-			state.humanoid.WalkSpeed = cruise_speed
-			state.needs_repath = true
-			return false
-		end
-		if now - started_at >= waypoint_timeout then
-			state.humanoid.WalkSpeed = cruise_speed
-			state.needs_repath = true
-			return false
-		end
-		task.wait(0.08)
-	end
-	state.humanoid.WalkSpeed = cruise_speed
-	return false
-end
-
-local function mark_arrived(state: agent_state)
-	if state.arrived then
-		return
-	end
-	state.arrived = true
-	discard_knowledge_inbox(state)
-	state.model:SetAttribute("PathState", "arrived")
-	state.model:SetAttribute("WaypointIndex", #state.waypoints)
-	state.model:SetAttribute("CommunicationState", "offline")
-	state.model:SetAttribute("ScannerActive", false)
-	state.scan_target = goal.Position
-	state.humanoid:MoveTo(state.root.Position)
-	disconnect_route(state)
-end
-
-local function run_scanner(state: agent_state)
-	while state.model.Parent and state.humanoid.Health > 0 and not state.arrived do
-		drain_knowledge_inbox(state)
-		monitor_obstacles(state)
-		update_scan(state, state.scan_target, true)
-		task.wait(scan_interval)
-	end
-	discard_knowledge_inbox(state)
-	state.model:SetAttribute("ScannerActive", false)
-	for _, line in state.markers do
-		for _, marker in line do
-			if marker.Parent then
-				marker:Destroy()
-			end
-		end
-	end
-end
-
-local function run_agent(state: agent_state, start_delay: number)
-	task.wait(start_delay)
-	local failures = 0
-
-	while state.model.Parent and state.humanoid.Health > 0 do
-		if (state.root.Position - goal.Position).Magnitude <= 5 then
-			mark_arrived(state)
-			return
-		end
-
-		if not compute_route(state) then
-			failures += 1
-			state.scan_target = goal.Position
-			task.wait(math.min(2.5, path_failure_delay * (1 + failures)))
+-- costs is the distance already paid, score adds the estimate still left to the goal
+local function findroute(map: grid, start: number, goal: number): ({number}, number)
+	local frontier: {entry} = {}
+	local costs: {[number]: number} = {[start] = 0}
+	local previous: {[number]: number} = {}
+	push(frontier, {cell = start, cost = 0, score = distance(map, start, goal)})
+	while #frontier > 0 do
+		local current = pop(frontier)
+		-- a cheaper entry can overtake one already in the heap, leave the older one alone
+		if current.cost ~= costs[current.cell] then
 			continue
 		end
-
-		failures = 0
-		local route_completed = true
-		for index = 2, #state.waypoints do
-			state.waypoint_index = index
-			state.model:SetAttribute("WaypointIndex", index)
-			local turn_angle = waypoint_turn_angle(state.waypoints, index)
-			local is_corner = turn_angle >= 28
-			local reach_radius = if is_corner then corner_reach_radius else straight_reach_radius
-			state.model:SetAttribute("TurnAngle", math.round(turn_angle))
-			if not move_to_waypoint(state, state.waypoints[index], reach_radius, is_corner) then
-				route_completed = false
-				break
-			end
+		if current.cell == goal then
+			return retrace(previous, start, goal), current.cost
 		end
+		for _, cell in neighbors(map, current.cell) do
+			local known = map.cells[cell]
+			if known and known.blocked then
+				continue
+			end
+			-- unknown doesn't mean blocked, otherwise nobody would leave the starting cell
+			-- give it a small extra cost so a checked passage is preferred when routes are close
+			local cost = current.cost + (if known then 1 else 1.15)
+			if cost >= (costs[cell] or math.huge) then
+				continue
+			end
+			costs[cell] = cost
+			previous[cell] = current.cell
+			push(frontier, {cell = cell, cost = cost, score = cost + distance(map, cell, goal)})
+		end
+	end
+	-- no reachable goal in the current knowledge, the agent will wait and check again
+	return {}, math.huge
+end
 
-		if route_completed and (state.root.Position - goal.Position).Magnitude <= 5 then
-			mark_arrived(state)
+-- count only the part of the old route still ahead of this agent
+local function routecost(map: grid, route: {number}, first: number): number
+	if #route == 0 then return math.huge end
+	local cost = 0
+	for index = first + 1, #route do
+		local known = map.cells[route[index]]
+		if known and known.blocked then return math.huge end
+		cost += if known then 1 else 1.15
+	end
+	return cost
+end
+
+local function couldshorten(map: grid, anchor: number, opened: number, goal: number, cost: number): boolean
+	-- even a perfectly clear way through this opening can't help if this lower bound is too long
+	return distance(map, anchor, opened) + distance(map, opened, goal) < cost - 0.0001
+end
+
+-- runtime adapter
+-- everything above works on cell ids, the code below connects it to the actual maze
+local runservice = game:GetService("RunService")
+local replicatedstorage = game:GetService("ReplicatedStorage")
+local serverstorage = game:GetService("ServerStorage")
+local rigs = require(script.Parent:WaitForChild("mazerigs"))
+local maze = workspace:WaitForChild("Maze")
+local agents = workspace:WaitForChild("MazeAgents")
+local floor = maze:WaitForChild("MazeFloor") :: BasePart
+local goal = maze:WaitForChild("GoalPad") :: BasePart
+local knowledgeevent = replicatedstorage:WaitForChild("maze_knowledge_event") :: RemoteEvent
+local worldevent = serverstorage:WaitForChild("maze_world_changed") :: BindableEvent
+-- start also registers the agent collision group before it is used by the overlap query
+local initialrigs = rigs.start(maze, agents)
+-- watermark:2/8:6b616b6f5a6162696a
+
+-- these walls are 8 stud tiles, keep the cell centers lined up with the authored maze
+local cellsize = 8
+-- if you want more frequent scans, lower this interval, it also increases the query workload
+local interval = 0.16
+-- leave enough room for humanoid's own arrival tolerance, asking for a tighter center can stall it
+local reach = 1.1
+local movetimeout = 2.5
+local recoverytime = 1.5
+local map = newgrid(math.round(floor.Size.X / cellsize), math.round(floor.Size.Z / cellsize))
+local origin = Vector3.new(-floor.Size.X / 2 + cellsize / 2, floor.Size.Y / 2, -floor.Size.Z / 2 + cellsize / 2)
+-- use the same collision rules as the rigs, otherwise a decorative marker could look like a wall
+local overlap = OverlapParams.new()
+overlap.FilterType = Enum.RaycastFilterType.Exclude
+overlap.FilterDescendantsInstances = {agents}
+overlap.CollisionGroup = "MazeAgents"
+overlap.RespectCanCollide = true
+-- one collidable part is enough to call the body space blocked
+overlap.MaxParts = 1
+
+-- anchor is the last reached center, target can still be halfway through a move
+type agent = {
+	rig: rigs.rig, mode: string, anchor: number, target: number, route: {number}, cursor: number,
+	dirty: boolean, reason: string, started: number, progress: number, best: number,
+	nextplan: number, nextcommand: number, failures: number, sharedat: number, peerchanges: number,
+	peertrigger: number?, peersource: string, openings: {[number]: boolean}, shortcuts: number, demopath: boolean, demoentry: number?, demohold: boolean,
+}
+type obstruction = {part: BasePart, checked: number}
+type collapse = {revision: number, phase: string, cell: number, parts: {BasePart}, footprint: {[number]: boolean}}
+local collapses: {[string]: collapse} = {}
+-- separate holds per collapse let overlapping debris keep a cell closed until both finish
+local gates: {[number]: {[string]: boolean}} = {}
+local generation: Instance? = nil
+local states: {agent} = {}
+local blockers: {[number]: obstruction} = {}
+local connections: {RBXScriptConnection} = {}
+local running = true
+local nextnotice = 0
+
+local democell = agents:GetAttribute("democell")
+assert(typeof(democell) == "number", "demo cell was not set by the rig setup")
+
+local function demomessage(phase: string, message: string, now: number)
+	agents:SetAttribute("demophase", phase)
+	agents:SetAttribute("demomessage", message)
+	nextnotice = now + 4
+	local kind = if phase == "warning" then "collapse_warning" elseif phase == "falling" then "collapse" elseif phase == "shortcut" or phase == "complete" then "recommended" else "shared"
+	knowledgeevent:FireAllClients({message = message, kind = kind, version = map.revision, priority = true})
+end
+
+-- keep the grid relative to the floor rather than duplicating world offsets in each caller
+local function worldpoint(cell: number): Vector3
+	local x, z = coordinates(map, cell)
+	return floor.CFrame:PointToWorldSpace(origin + Vector3.new(x * cellsize, 0, z * cellsize))
+end
+
+local function cellfromworld(position: Vector3): number?
+	local point = floor.CFrame:PointToObjectSpace(position) - origin
+	return cellat(map, math.round(point.X / cellsize), math.round(point.Z / cellsize))
+end
+
+local goalcell = cellfromworld(goal.Position)
+assert(goalcell, "goal is outside the navigation grid")
+
+local function remainingcontains(state: agent, cell: number): boolean
+	return table.find(state.route, cell, state.cursor) ~= nil
+end
+
+local function setmode(state: agent, mode: string)
+	state.mode = mode
+	state.rig.model:SetAttribute("PathState", mode)
+end
+
+-- this is the only place that issues movement commands
+-- sensing and shared discoveries ask for a new plan instead of steering over each other
+local function drive(state: agent, target: Vector3?)
+	state.rig.humanoid:MoveTo(target or state.rig.root.Position)
+end
+-- watermark:3/8:616b20286c756b616b
+
+local function publish(cell: number, blocked: boolean, source: string, now: number)
+	-- a local scan can catch a gap between falling pieces, keep the opening closed until the whole collapse clears
+	blocked = blocked or gates[cell] ~= nil
+	local previous = map.cells[cell]
+	if not discover(map, cell, blocked) then
+		return
+	end
+	local reopened = previous ~= nil and previous.blocked and not blocked
+	if cell == democell and blocked and not previous then
+		agents:SetAttribute("demoscout", source)
+		agents:SetAttribute("demodiscoveredat", now)
+	end
+	local affected = 0
+	for _, state in states do
+		if state.mode == "arrived" or state.mode == "stopped" then
+			continue
+		end
+		state.rig.model:SetAttribute("SharedMemoryVersion", map.revision)
+		local first = table.find(state.route, state.anchor) or 1
+		-- skip the search if even the shortest possible way through this opening cannot beat the old route
+		local useful = reopened and couldshorten(map, state.anchor, cell, goalcell :: number, routecost(map, state.route, first))
+		if not (useful or (reopened and state.mode == "waiting") or (blocked and remainingcontains(state, cell))) then
+			continue
+		end
+		-- keep every pending opening, a second event must not replace one the agent has not checked yet
+		if reopened then state.openings[cell] = true end
+		state.dirty = true
+		local external = source == "structural change" or source == "debris cleared"
+		state.reason = if external then "structural change" elseif state.rig.model.Name == source then "local discovery" else "shared discovery"
+		state.rig.model:SetAttribute("LastKnowledgeSource", source)
+		state.rig.model:SetAttribute("lastdiscoverycell", cell)
+		if state.rig.model.Name == source or external then continue end
+		state.sharedat = now
+		if blocked then
+			state.peertrigger = cell
+			state.peersource = source
+		end
+		affected += 1
+	end
+	agents:SetAttribute("KnowledgeMessagesPublished", map.revision)
+	-- only the notification is throttled, the map and all affected agents were updated above
+	if affected == 0 or now < nextnotice or (democell and not agents:GetAttribute("democomplete")) then
+		return
+	end
+	nextnotice = now + 2
+	knowledgeevent:FireAllClients({
+		message = string.format("%s found %s - %d agents are updating their routes", string.lower(source), if blocked then "a blockage" else "an opening", affected),
+		kind = if blocked then "blocked" else "recommended", version = map.revision,
+	})
+end
+
+local function readcell(cell: number): BasePart?
+	local center = worldpoint(cell) + floor.CFrame.UpVector * 2.5
+	-- check the space the body needs, a single center ray can miss debris beside it
+	local parts = workspace:GetPartBoundsInBox(CFrame.new(center) * floor.CFrame.Rotation, Vector3.new(2.6, 4, 2.6), overlap)
+	return parts[1]
+end
+
+-- only the current cell and its four neighbors are learned here, there is no full-maze reveal
+local function sense(state: agent, now: number)
+	publish(state.anchor, false, state.rig.model.Name, now)
+	for _, cell in neighbors(map, state.anchor) do
+		local part = readcell(cell)
+		blockers[cell] = if part then {part = part, checked = now} else nil
+		publish(cell, part ~= nil, state.rig.model.Name, now)
+	end
+end
+
+local function beginmove(state: agent, target: number, mode: string, now: number)
+	state.target = target
+	state.started = now
+	-- progress has its own timer so repeated movement commands cannot hide a stuck rig
+	state.progress = now
+	state.best = math.huge
+	state.nextcommand = now + 0.5
+	setmode(state, mode)
+	state.rig.model:SetAttribute("currentcell", state.anchor)
+	state.rig.model:SetAttribute("targetcell", target)
+	drive(state, worldpoint(target))
+end
+
+local function retire(state: agent, mode: string)
+	setmode(state, mode)
+	if state.rig.root.Parent and state.rig.humanoid.Parent then
+		drive(state, nil)
+	end
+	state.rig.model:SetAttribute("currentcell", state.anchor)
+	state.route = {}
+	state.rig.model:SetAttribute("ScannerActive", false)
+	state.rig.model:SetAttribute("CommunicationState", "offline")
+	rigs.clear(state.rig)
+end
+-- watermark:4/8:6f7a6162696a616b29
+
+-- count a shortcut only when the new route uses a reopened cell the old route didn't use
+local function recordopenings(state: agent, route: {number}, cost: number, oldstart: number, oldcost: number, now: number)
+	local oldroute = state.route
+	for cell in state.openings do
+		if oldcost == math.huge or cost >= oldcost - 0.0001 then break end
+		if not table.find(route, cell) or table.find(oldroute, cell, oldstart) then continue end
+		state.shortcuts += 1
+		state.rig.model:SetAttribute("shortcutchanges", state.shortcuts)
+		state.rig.model:SetAttribute("shortcutcell", cell)
+		state.rig.model:SetAttribute("shortcutbeforecost", oldcost)
+		state.rig.model:SetAttribute("shortcutaftercost", cost)
+		break
+	end
+	-- the demo needs fewer grid moves, a small change in the unknown-cell penalty alone does not count
+	if not state.openings[democell] or oldcost == math.huge then return end
+	if #route == 0 or #route >= #oldroute - oldstart + 1 then return end
+	if not table.find(route, democell) or table.find(oldroute, democell, oldstart) then return end
+	state.demopath = true
+	if agents:GetAttribute("demoshortcut") then return end
+	agents:SetAttribute("demoshortcut", true)
+	agents:SetAttribute("demoshortcutagent", state.rig.model.Name)
+	agents:SetAttribute("demobeforesteps", #oldroute - oldstart)
+	agents:SetAttribute("demoaftersteps", #route - 1)
+	agents:SetAttribute("demoshortcutat", now)
+	demomessage("shortcut", string.format("%s found a shorter route through the cleared wall: %d moves instead of %d", state.rig.model.Name, #route - 1, #oldroute - oldstart), now)
+end
+
+-- the blocked cell must disappear from a real planned route before this counts as a shared change
+local function recordshared(state: agent, route: {number}, oldstart: number, now: number)
+	local oldroute = state.route
+	local changed = #route ~= #oldroute - oldstart + 1
+	for index, cell in route do
+		changed = changed or oldroute[oldstart + index - 1] ~= cell
+	end
+	local trigger = state.peertrigger
+	if not changed or not trigger or #route == 0 then return end
+	if not table.find(oldroute, trigger, oldstart) or table.find(route, trigger) then return end
+	state.peerchanges += 1
+	state.rig.model:SetAttribute("sharedroutechanges", state.peerchanges)
+	state.rig.model:SetAttribute("sharedchangeat", now)
+	state.rig.model:SetAttribute("sharedchangecell", trigger)
+	state.rig.model:SetAttribute("sharedchangesource", state.peersource)
+	local separation = (state.rig.root.Position - worldpoint(trigger)).Magnitude
+	state.rig.model:SetAttribute("sharedchangedistance", separation)
+	if trigger ~= democell or distance(map, state.anchor, trigger) < 2 then return end
+	if agents:GetAttribute("demoshared") then return end
+	-- this pause stages the demonstration, the planner still decides which route to take afterward
+	state.demohold = true
+	state.nextplan = now + 25
+	agents:SetAttribute("demoshared", true)
+	agents:SetAttribute("demoreceiver", state.rig.model.Name)
+	agents:SetAttribute("demosource", state.peersource)
+	agents:SetAttribute("demoshareddistance", separation)
+	agents:SetAttribute("demosharedat", now)
+	demomessage("shared", state.peersource .. " found the wall - " .. state.rig.model.Name .. " changed route before reaching it", now)
+end
+
+local function plan(state: agent, now: number)
+	local oldroute = state.route
+	local oldstart = table.find(oldroute, state.anchor) or 1
+	local oldcost = if oldroute[oldstart] == state.anchor then routecost(map, oldroute, oldstart) else math.huge
+	local route, cost = findroute(map, state.anchor, goalcell :: number)
+	-- an opening is worth checking, but it doesn't automatically make a better route
+	if next(state.openings) and oldcost < math.huge and cost >= oldcost - 0.0001 then
+		route = table.move(oldroute, oldstart, #oldroute, 1, {})
+		cost = oldcost
+	end
+	recordopenings(state, route, cost, oldstart, oldcost, now)
+	table.clear(state.openings)
+	recordshared(state, route, oldstart, now)
+	state.peertrigger = nil
+	state.route = route
+	-- the first entry is our anchor, moving starts at the next cell
+	state.cursor = 2
+	state.dirty = false
+	state.rig.model:SetAttribute("routerevision", map.revision)
+	state.rig.model:SetAttribute("routecost", if cost == math.huge then -1 else cost)
+	state.rig.model:SetAttribute("WaypointCount", #route)
+	state.rig.model:SetAttribute("replanreason", state.reason)
+	state.rig.model:SetAttribute("plannedroute", table.concat(route, ","))
+	if #route == 0 then
+		setmode(state, "waiting")
+		state.nextplan = now + 1
+		return
+	end
+	if #route == 1 then
+		retire(state, "arrived")
+		return
+	end
+	if state.demohold then
+		state.target = state.anchor
+		drive(state, nil)
+		setmode(state, "observing")
+		return
+	end
+	beginmove(state, route[2], "moving", now)
+end
+-- watermark:5/8:206f6e20446973636f
+
+local function recover(state: agent, now: number)
+	state.failures += 1
+	state.dirty = true
+	-- head back to the last reached center, don't cut across a corner from half a tile away
+	beginmove(state, state.anchor, "recovering", now)
+end
+
+-- touching the opening and turning back isn't a crossing, remember which side the rig entered from
+local function recordcrossing(state: agent, now: number)
+	local crossed = state.anchor == democell and state.target ~= democell and state.demoentry ~= nil and state.target ~= state.demoentry
+	if not crossed or not state.demopath or agents:GetAttribute("democomplete") then return end
+	agents:SetAttribute("democomplete", true)
+	agents:SetAttribute("demotraversedby", state.rig.model.Name)
+	agents:SetAttribute("demotraversedat", now)
+	agents:SetAttribute("demoexitcell", state.target)
+	agents:SetAttribute("demoentrycell", state.demoentry)
+	demomessage("complete", state.rig.model.Name .. " walked through the new passage - shared discovery and shortcut demonstrated", now)
+end
+
+local function reachcell(state: agent, now: number)
+	recordcrossing(state, now)
+	if state.target == democell and state.anchor ~= democell then state.demoentry = state.anchor end
+	state.anchor = state.target
+	state.failures = 0
+	drive(state, nil)
+	setmode(state, "planning")
+	sense(state, now)
+	if state.anchor == goalcell then
+		retire(state, "arrived")
+		return
+	end
+	if not state.dirty and state.cursor < #state.route then
+		state.cursor += 1
+		beginmove(state, state.route[state.cursor], "moving", now)
+	end
+end
+
+local function maintainmove(state: agent, now: number)
+	local rig = state.rig
+	-- an overall deadline catches slow drifting as well as a rig making no progress at all
+	local stalled = now - state.progress > recoverytime or now - state.started > movetimeout
+	if state.mode == "moving" and stalled then
+		local part = readcell(state.target)
+		if part then
+			blockers[state.target] = {part = part, checked = now}
+			publish(state.target, true, rig.model.Name, now)
+		end
+		state.reason = "movement recovery"
+		recover(state, now)
+		return
+	end
+	if state.mode == "recovering" and now - state.started > movetimeout then
+		-- a shove can move the agent into another cell, only accept it if the body fits there
+		local cell = cellfromworld(rig.root.Position)
+		if not cell or readcell(cell) or state.failures >= 4 then
+			retire(state, "stopped")
 			return
 		end
+		state.anchor = cell
+		beginmove(state, cell, "recovering", now)
+		state.failures += 1
+		return
+	end
+	if state.mode ~= "moving" and state.mode ~= "recovering" then return end
+	if now < state.nextcommand then return end
+	state.nextcommand = now + 0.5
+	drive(state, worldpoint(state.target))
+end
+-- watermark:6/8:72642c206b696c6c65
 
-		disconnect_route(state)
-		task.wait(repath_delay)
+-- keep arrival/progress checks separate from the lifecycle states and the timeout recovery
+local function advance(state: agent, now: number): boolean
+	local blocked = map.cells[state.target]
+	if state.mode == "moving" and blocked and blocked.blocked then
+		recover(state, now)
+		return false
+	end
+	local delta = state.rig.root.Position - worldpoint(state.target)
+	local horizontal = Vector3.new(delta.X, 0, delta.Z).Magnitude
+	if horizontal <= reach then
+		reachcell(state, now)
+		return state.mode ~= "arrived"
+	end
+	if horizontal < state.best - 0.15 then
+		state.best = horizontal
+		state.progress = now
+	end
+	maintainmove(state, now)
+	return true
+end
+
+local function update(state: agent, now: number): boolean
+	local rig = state.rig
+	if state.mode == "arrived" or state.mode == "stopped" then
+		return false
+	end
+	if not rig.model:IsDescendantOf(agents) or rig.humanoid.Health <= 0 or not rig.root.Parent then
+		retire(state, "stopped")
+		return false
+	end
+	if state.mode == "observing" then
+		-- give the viewer time to follow the collapse, while new discoveries still update this runner's plan
+		if agents:GetAttribute("democlearedat") or now >= state.nextplan then
+			state.demohold = false
+			state.dirty = true
+			setmode(state, "planning")
+			agents:SetAttribute("demoresumedat", now)
+		end
+		rigs.draw(rig, worldpoint(state.target), now - state.sharedat)
+		return state.dirty
 	end
 
-	disconnect_route(state)
+	if state.mode == "queued" then
+		if now < state.nextplan then return false end
+		beginmove(state, state.anchor, "recovering", now)
+	end
+	local travelling = state.mode == "moving" or state.mode == "recovering"
+	if travelling and not advance(state, now) then return false end
+	if state.mode == "waiting" and now >= state.nextplan then
+		sense(state, now)
+		setmode(state, "planning")
+	end
+	if state.mode ~= "arrived" and state.mode ~= "stopped" then
+		rigs.draw(rig, worldpoint(state.target), now - state.sharedat)
+	end
+	rig.model:SetAttribute("currentcell", state.anchor)
+	rig.model:SetAttribute("targetcell", state.target)
+	return state.mode == "planning"
 end
 
-configure_collision_group()
-configure_navigation_decor()
-
-local agent_models = {}
-for _, child in agents_folder:GetChildren() do
-	if child:IsA("Model") then
-		table.insert(agent_models, child)
+-- re-query the body space before publishing, a cleared chunk can still have another wall behind it
+local function refresh(cells: {[number]: boolean}, now: number)
+	for cell in cells do
+		local part = readcell(cell)
+		blockers[cell] = if part then {part = part, checked = now} else nil
+		publish(cell, part ~= nil, "structural change", now)
 	end
 end
-table.sort(agent_models, function(left, right)
-	return left.Name < right.Name
-end)
-randomize_agent_spawns(agent_models)
 
-for _, model in agent_models do
-	local state = configure_agent(model)
-	if state then
-		table.insert(states, state)
+local function collidable(part: BasePart): boolean
+	return part:IsDescendantOf(workspace) and part.CanCollide
+end
+
+local function footprint(record: collapse): {[number]: boolean}
+	local cells = {[record.cell] = true}
+	for _, part in record.parts do
+		if not collidable(part) then continue end
+		local pose = floor.CFrame:ToObjectSpace(part.CFrame)
+		local size = part.Size * 0.5
+		local right, up, look = pose.RightVector, pose.UpVector, pose.LookVector
+		-- rotated debris can overlap more than its center cell, include the body's half width too
+		local xradius = math.abs(right.X) * size.X + math.abs(up.X) * size.Y + math.abs(look.X) * size.Z + 1.3
+		local zradius = math.abs(right.Z) * size.X + math.abs(up.Z) * size.Y + math.abs(look.Z) * size.Z + 1.3
+		local point = pose.Position - origin
+		-- round inward to the cell centers whose body boxes might overlap this part, then clamp to the grid
+		local minx = math.max(0, math.ceil((point.X - xradius) / cellsize))
+		local maxx = math.min(map.width - 1, math.floor((point.X + xradius) / cellsize))
+		local minz = math.max(0, math.ceil((point.Z - zradius) / cellsize))
+		local maxz = math.min(map.height - 1, math.floor((point.Z + zradius) / cellsize))
+		for z = minz, maxz do
+			for x = minx, maxx do
+				cells[z * map.width + x + 1] = true
+			end
+		end
+	end
+	return cells
+end
+-- watermark:7/8:726f7833393035206f
+
+local function updategeneration(now: number)
+	local current = workspace:FindFirstChild("maze_collapse_debris")
+	if generation == current then return end
+	local affected: {[number]: boolean} = {}
+	for _, record in collapses do
+		for cell in record.footprint do affected[cell] = true end
+	end
+	generation = current
+	table.clear(collapses)
+	table.clear(gates)
+	-- old debris belongs to the old folder, its delayed messages can't reopen the new maze
+	refresh(affected, now)
+end
+
+local function setgate(cell: number, id: string, blocked: boolean)
+	if blocked then
+		gates[cell] = gates[cell] or {}
+		gates[cell][id] = true
+		return
+	end
+	local gate = gates[cell]
+	if not gate then return end
+	gate[id] = nil
+	if not next(gate) then gates[cell] = nil end
+end
+
+local phases = {warning = 1, falling = 2, cleared = 3}
+local function worldchanged(payload: unknown)
+	if not running or typeof(payload) ~= "table" then return end
+	-- this is a server bindable, still validate the fields before using them as cell or table keys
+	local data = payload :: any
+	local current = workspace:FindFirstChild("maze_collapse_debris")
+	-- folder identity is the generation check, matching names alone would accept an old run
+	if not current or data.owner ~= current then return end
+	if typeof(data.id) ~= "string" or #data.id > 80 then return end
+	if typeof(data.phase) ~= "string" or not phases[data.phase] then return end
+	if phases[data.phase] ~= data.revision then return end
+	if typeof(data.position) ~= "Vector3" or typeof(data.parts) ~= "table" or #data.parts > 64 then return end
+	local position = data.position :: Vector3
+	if position.X ~= position.X or position.Z ~= position.Z or math.abs(position.X) == math.huge or math.abs(position.Z) == math.huge then return end
+	local cell = cellfromworld(position)
+	if not cell then return end
+	local now = os.clock()
+	updategeneration(now)
+	local previous = collapses[data.id]
+	-- warning, falling, cleared must advance for the same cell, late or repeated phases do nothing
+	if previous and (data.revision <= previous.revision or cell ~= previous.cell) then return end
+	local parts: {BasePart} = {}
+	for _, part in data.parts do
+		if typeof(part) ~= "Instance" or not part:IsA("BasePart") then return end
+		if part.Parent and not part:IsDescendantOf(current) then return end
+		table.insert(parts, part)
+	end
+	if data.phase == "cleared" then
+		-- check the earlier snapshot too, an empty payload must not hide a piece still blocking the path
+		for _, part in if previous then previous.parts else parts do
+			if collidable(part) then return end
+		end
+		-- the new snapshot may contain a piece that was absent from the earlier one
+		for _, part in parts do
+			if collidable(part) then return end
+		end
+	end
+	local record: collapse = {revision = data.revision, phase = data.phase, cell = cell, parts = parts, footprint = {[cell] = true}}
+	collapses[data.id] = record
+	setgate(cell, data.id, data.phase ~= "cleared")
+	local cells = footprint(record)
+	if previous then
+		for oldcell in previous.footprint do cells[oldcell] = true end
+	end
+	refresh(cells, now)
+	record.footprint = if data.phase == "cleared" then {} else cells
+	if data.phase == "cleared" then table.clear(record.parts) end
+	agents:SetAttribute("lastcollapsephase", data.phase)
+	agents:SetAttribute("lastcollapsecell", cell)
+	if cell == democell then
+		agents:SetAttribute("demo" .. data.phase .. "at", now)
+		local messages = {warning = "the runner pauses nearby - watch the orange wall", falling = "the wall collapsed - waiting for all debris to clear", cleared = "debris is clear - agents can now compare routes through the opening"}
+		demomessage(data.phase, messages[data.phase], now)
+		return
+	end
+	local messages = {warning = "is becoming unstable", falling = "collapsed - watching the debris", cleared = "debris cleared - checking the opening"}
+	knowledgeevent:FireAllClients({message = string.lower(data.id) .. " " .. messages[data.phase], kind = if data.phase == "warning" then "collapse_warning" elseif data.phase == "falling" then "collapse" else "shared", version = map.revision})
+end
+-- watermark:8/8:6e20526f626c6f782e
+
+local function updatedebris(now: number)
+	updategeneration(now)
+	local affected: {[number]: boolean} = {}
+	for _, record in collapses do
+		if record.phase ~= "falling" then continue end
+		local cells = footprint(record)
+		for cell in record.footprint do affected[cell] = true end
+		for cell in cells do affected[cell] = true end
+		record.footprint = cells
+	end
+	-- both the new and the vacated cells matter when a fragment rolls away
+	refresh(affected, now)
+end
+
+-- stop accepting updates before dropping the shared map and rig references
+local function stop()
+	if not running then
+		return
+	end
+	running = false
+	for _, connection in connections do
+		connection:Disconnect()
+	end
+	for _, state in states do
+		retire(state, "stopped")
+	end
+	table.clear(states)
+	table.clear(blockers)
+	table.clear(collapses)
+	table.clear(gates)
+	table.clear(connections)
+	table.clear(map.cells)
+end
+
+for _, rig in initialrigs do
+	local cell = cellfromworld(rig.root.Position)
+	assert(cell, "agent is outside the navigation grid")
+	local state: agent = {
+		rig = rig, mode = "planning", anchor = cell, target = cell, route = {}, cursor = 1,
+		dirty = true, reason = "initial plan", started = 0, progress = 0, best = math.huge,
+		nextplan = 0, nextcommand = 0, failures = 0, sharedat = -math.huge, peerchanges = 0,
+		peertrigger = nil, peersource = "", openings = {}, shortcuts = 0, demopath = false, demoentry = nil, demohold = false,
+	}
+	table.insert(states, state)
+	local delay = rig.model:GetAttribute("startdelay")
+	if typeof(delay) == "number" and delay > 0 then
+		state.nextplan = os.clock() + delay
+		setmode(state, "queued")
+	else
+		beginmove(state, cell, "recovering", os.clock())
 	end
 end
 
-table.sort(states, function(left, right)
-	return left.model.Name < right.model.Name
-end)
-
-for index, state in states do
-	task.spawn(run_scanner, state)
-	task.spawn(run_agent, state, (index - 1) * 0.1)
-end
-
-print(string.format("[maze agents] started %d advanced navigators", #states))
+local elapsed = 0
+table.insert(connections, worldevent.Event:Connect(worldchanged))
+-- the module watches the owner because a destroyed script cannot reliably run its own deferred cleanup
+rigs.watch(script, stop)
+table.insert(connections, runservice.Heartbeat:Connect(function(dt)
+	elapsed += dt
+	if not running or elapsed < interval then
+		return
+	end
+	elapsed = 0
+	local now = os.clock()
+	-- share one search budget across the group, discoveries still arrive even when planning has to wait
+	local budget = 2
+	updatedebris(now)
+	-- a falling fragment can leave a cell without being destroyed
+	for cell, obstruction in blockers do
+		local part = obstruction.part
+		local staticwall = part:IsDescendantOf(maze) and part.CanCollide and part.Anchored and string.match(part.Name, "^Wall_")
+		if now - obstruction.checked < 1 or staticwall then
+			continue
+		end
+		local part = readcell(cell)
+		blockers[cell] = if part then {part = part, checked = now} else nil
+		publish(cell, part ~= nil, "debris cleared", now)
+	end
+	for _, state in states do
+		if update(state, now) and budget > 0 then
+			budget -= 1
+			plan(state, now)
+		end
+	end
+end))

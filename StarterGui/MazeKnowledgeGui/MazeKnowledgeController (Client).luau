@@ -1,14 +1,15 @@
--- Made by LukakoZabijak (lukakozabijak) on discord, killerox3905 on Roblox.
 --!strict
 
-local rs = game:GetService("ReplicatedStorage")
-local ts = game:GetService("TweenService")
+-- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
+local replicated_storage = game:GetService("ReplicatedStorage")
+local tween_service = game:GetService("TweenService")
 
 local screen_gui = script.Parent :: ScreenGui
 local title = screen_gui:WaitForChild("title") :: TextLabel
 local legend = screen_gui:WaitForChild("legend") :: TextLabel
 local notification = screen_gui:WaitForChild("notification") :: TextLabel
-local knowledge_event = rs:WaitForChild("maze_knowledge_event") :: RemoteEvent
+local knowledge_event = replicated_storage:WaitForChild("maze_knowledge_event") :: RemoteEvent
 
 title.Text = ""
 legend.Text = ""
@@ -18,17 +19,20 @@ notification.TextTransparency = 1
 
 local message_queue: {{message: string, kind: string}} = {}
 local queue_running = false
+local revision = 0
+local activefade: Tween? = nil
+-- watermark:1/6:4d616465206279204c756b616b
 
-local function type_text(label: TextLabel, message: string, delay_per_character: number)
+local function type_text(label: TextLabel, message: string, delay_per_character: number, token: number?): boolean
 	label.Text = ""
 	for index = 1, #message do
-		if not label.Parent then
-			return
-		end
+		if not label.Parent or (token and token ~= revision) then return false end
 		label.Text = string.sub(message, 1, index)
 		task.wait(delay_per_character)
 	end
+	return true
 end
+-- watermark:2/6:6f5a6162696a616b20286c75
 
 local function notification_color(kind: string): Color3
 	if kind == "blocked" then
@@ -45,35 +49,42 @@ local function notification_color(kind: string): Color3
 	end
 	return Color3.fromRGB(53, 217, 255)
 end
+-- watermark:3/6:6b616b6f7a6162696a616b29
+
+local function shownotice(item: {message: string, kind: string})
+	local token = revision
+	notification.TextColor3 = notification_color(item.kind)
+	notification.TextTransparency = 0
+	if not type_text(notification, item.message, 0.022, token) then return end
+	local deadline = os.clock() + 1.8
+	while token == revision and os.clock() < deadline do task.wait(0.05) end
+	if token ~= revision or not screen_gui.Parent then return end
+	local fade = tween_service:Create(notification, TweenInfo.new(0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {TextTransparency = 1})
+	activefade = fade
+	fade:Play()
+	fade.Completed:Wait()
+	activefade = nil
+	if token == revision then notification.Text = "" end
+end
 
 local function run_queue()
-	if queue_running then
-		return
-	end
+	if queue_running then return end
 	queue_running = true
 	while #message_queue > 0 and screen_gui.Parent do
 		local item = table.remove(message_queue, 1)
-		notification.TextColor3 = notification_color(item.kind)
-		notification.TextTransparency = 0
-		type_text(notification, item.message, 0.022)
-		task.wait(1.8)
-		local fade = ts:Create(
-			notification,
-			TweenInfo.new(0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-			{TextTransparency = 1}
-		)
-		fade:Play()
-		fade.Completed:Wait()
-		notification.Text = ""
-		task.wait(0.12)
+		shownotice(item)
 	end
 	queue_running = false
-	if #message_queue > 0 and screen_gui.Parent then
-		task.spawn(run_queue)
-	end
 end
+-- watermark:4/6:206f6e20446973636f72642c
 
-local function queue_message(message: string, kind: string)
+local function queue_message(message: string, kind: string, priority: boolean?)
+	if priority then
+		-- an old warning shouldn't finish typing over an opening that's already cleared
+		revision += 1
+		table.clear(message_queue)
+		if activefade then activefade:Cancel() end
+	end
 	if #message_queue >= 4 then
 		table.remove(message_queue, 1)
 	end
@@ -85,6 +96,7 @@ local function queue_message(message: string, kind: string)
 		task.spawn(run_queue)
 	end
 end
+-- watermark:5/6:206b696c6c65726f78333930
 
 knowledge_event.OnClientEvent:Connect(function(payload)
 	if typeof(payload) ~= "table" then
@@ -98,8 +110,9 @@ knowledge_event.OnClientEvent:Connect(function(payload)
 	if #message > 140 then
 		return
 	end
-	queue_message(message, kind)
+	queue_message(message, kind, payload.priority == true)
 end)
+-- watermark:6/6:35206f6e20526f626c6f782e
 
 task.spawn(function()
 	type_text(title, "one learns. all know.", 0.045)
@@ -111,3 +124,4 @@ task.spawn(function()
 	task.wait(0.35)
 	queue_message("dummies share discoveries and structural changes in real time", "shared")
 end)
+

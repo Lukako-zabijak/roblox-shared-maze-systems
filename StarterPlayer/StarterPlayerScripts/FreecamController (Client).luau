@@ -1,12 +1,13 @@
--- Made by LukakoZabijak (lukakozabijak) on discord, killerox3905 on Roblox.
 --!strict
 
-local cas = game:GetService("ContextActionService")
-local plrs = game:GetService("Players")
-local rs = game:GetService("RunService")
-local uis = game:GetService("UserInputService")
+-- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- 4d616465206279204c756b616b6f5a6162696a616b20286c756b616b6f7a6162696a616b29206f6e20446973636f72642c206b696c6c65726f7833393035206f6e20526f626c6f782e
+local context_action_service = game:GetService("ContextActionService")
+local players = game:GetService("Players")
+local run_service = game:GetService("RunService")
+local user_input_service = game:GetService("UserInputService")
 
-local player = plrs.LocalPlayer
+local player = players.LocalPlayer
 local toggle_action_name = "maze_runtime_freecam_toggle"
 local control_action_name = "maze_runtime_freecam_controls"
 local render_step_name = "maze_runtime_freecam"
@@ -42,6 +43,7 @@ local velocity = Vector3.zero
 local pan_delta = Vector2.zero
 local wheel_delta = 0
 local current_speed = base_speed
+-- watermark:1/8:4d616465206279204c75
 
 local function current_camera(): Camera?
 	return workspace.CurrentCamera
@@ -69,13 +71,14 @@ local function update_mouse_capture()
 		return
 	end
 	if looking or panning then
-		uis.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
-		uis.MouseIconEnabled = false
+		user_input_service.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+		user_input_service.MouseIconEnabled = false
 	else
-		uis.MouseBehavior = Enum.MouseBehavior.Default
-		uis.MouseIconEnabled = true
+		user_input_service.MouseBehavior = Enum.MouseBehavior.Default
+		user_input_service.MouseIconEnabled = true
 	end
 end
+-- watermark:2/8:6b616b6f5a6162696a
 
 local function set_button_state(input: InputObject, is_down: boolean)
 	if input.KeyCode ~= Enum.KeyCode.Unknown then
@@ -115,6 +118,7 @@ local function render_freecam(delta_time: number)
 	if not camera then
 		return
 	end
+-- watermark:3/8:616b20286c756b616b
 
 	local dt = math.min(delta_time, 0.1)
 	local rotation = CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
@@ -150,6 +154,7 @@ local function render_freecam(delta_time: number)
 			+ rotation.UpVector * (pan_delta.Y * pan_scale)
 		pan_delta = Vector2.zero
 	end
+-- watermark:4/8:6f7a6162696a616b29
 
 	if wheel_delta ~= 0 then
 		local dolly_distance = current_speed * 0.18 * wheel_delta
@@ -163,7 +168,7 @@ local function render_freecam(delta_time: number)
 end
 
 local function bind_controls()
-	cas:BindActionAtPriority(
+	context_action_service:BindActionAtPriority(
 		control_action_name,
 		control_action,
 		false,
@@ -184,7 +189,7 @@ local function bind_controls()
 	)
 end
 
-local function enable_freecam()
+local function enable_freecam(view: CFrame?)
 	if active then
 		return
 	end
@@ -192,6 +197,7 @@ local function enable_freecam()
 	if not camera then
 		return
 	end
+-- watermark:5/8:206f6e20446973636f
 
 	saved_state = {
 		camera_type = camera.CameraType,
@@ -199,12 +205,13 @@ local function enable_freecam()
 		cframe = camera.CFrame,
 		focus = camera.Focus,
 		field_of_view = camera.FieldOfView,
-		mouse_behavior = uis.MouseBehavior,
-		mouse_icon_enabled = uis.MouseIconEnabled,
+		mouse_behavior = user_input_service.MouseBehavior,
+		mouse_icon_enabled = user_input_service.MouseIconEnabled,
 	}
 
-	local look = camera.CFrame.LookVector
-	camera_position = camera.CFrame.Position
+	local startingview = view or camera.CFrame
+	local look = startingview.LookVector
+	camera_position = startingview.Position
 	pitch = math.asin(math.clamp(look.Y, -1, 1))
 	yaw = math.atan2(-look.X, -look.Z)
 	current_speed = math.clamp(current_speed, minimum_speed, maximum_speed)
@@ -221,17 +228,18 @@ local function enable_freecam()
 	camera.CameraType = Enum.CameraType.Scriptable
 	camera.CameraSubject = nil
 	bind_controls()
-	rs:BindToRenderStep(render_step_name, Enum.RenderPriority.Camera.Value + 1, render_freecam)
+	run_service:BindToRenderStep(render_step_name, Enum.RenderPriority.Camera.Value + 1, render_freecam)
 	update_mouse_capture()
 end
+-- watermark:6/8:72642c206b696c6c65
 
 local function disable_freecam()
 	if not active then
 		return
 	end
 	active = false
-	cas:UnbindAction(control_action_name)
-	rs:UnbindFromRenderStep(render_step_name)
+	context_action_service:UnbindAction(control_action_name)
+	run_service:UnbindFromRenderStep(render_step_name)
 	clear_input_state()
 
 	local state = saved_state
@@ -246,11 +254,11 @@ local function disable_freecam()
 		camera.CFrame = state.cframe
 		camera.Focus = state.focus
 		camera.FieldOfView = state.field_of_view
-		uis.MouseBehavior = state.mouse_behavior
-		uis.MouseIconEnabled = state.mouse_icon_enabled
+		user_input_service.MouseBehavior = state.mouse_behavior
+		user_input_service.MouseIconEnabled = state.mouse_icon_enabled
 	else
-		uis.MouseBehavior = Enum.MouseBehavior.Default
-		uis.MouseIconEnabled = true
+		user_input_service.MouseBehavior = Enum.MouseBehavior.Default
+		user_input_service.MouseIconEnabled = true
 	end
 
 	saved_state = nil
@@ -264,19 +272,20 @@ local function toggle_freecam()
 		enable_freecam()
 	end
 end
+-- watermark:7/8:726f7833393035206f
 
 local function toggle_action(
 	_action_name: string,
 	input_state: Enum.UserInputState,
 	_input: InputObject
 ): Enum.ContextActionResult
-	if input_state == Enum.UserInputState.Begin and not uis:GetFocusedTextBox() then
+	if input_state == Enum.UserInputState.Begin and not user_input_service:GetFocusedTextBox() then
 		toggle_freecam()
 	end
 	return Enum.ContextActionResult.Sink
 end
 
-uis.InputChanged:Connect(function(input)
+user_input_service.InputChanged:Connect(function(input)
 	if not active then
 		return
 	end
@@ -306,6 +315,7 @@ workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 		camera.CameraSubject = nil
 	end
 end)
+-- watermark:8/8:6e20526f626c6f782e
 
 player.CharacterAdded:Connect(function(character)
 	if not active then
@@ -317,7 +327,7 @@ player.CharacterAdded:Connect(function(character)
 	end
 end)
 
-cas:BindActionAtPriority(
+context_action_service:BindActionAtPriority(
 	toggle_action_name,
 	toggle_action,
 	false,
@@ -327,8 +337,17 @@ cas:BindActionAtPriority(
 
 script.Destroying:Connect(function()
 	disable_freecam()
-	cas:UnbindAction(toggle_action_name)
+	context_action_service:UnbindAction(toggle_action_name)
 end)
 
 script:SetAttribute("active", false)
 script:SetAttribute("speed", current_speed)
+
+
+-- start over the demonstration so the first discovery is visible, f3 still returns to the player
+local maze = workspace:WaitForChild("Maze", 10)
+local wall = if maze then maze:WaitForChild("Wall_32_31", 5) else nil
+if wall and wall:IsA("BasePart") then
+	local position = wall.Position
+	enable_freecam(CFrame.lookAt(position + Vector3.new(-8, 76, 12), position + Vector3.new(-8, -8, -6)))
+end
