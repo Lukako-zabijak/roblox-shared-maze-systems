@@ -37,3 +37,8 @@ fixture = (tests / 'world fixture.luau').read_text(encoding='utf-8')
 checks = (tests / 'behavior tests.luau').read_text(encoding='utf-8')
 (output / 'behavior tests.luau').write_text(fixture + behavior + checks, encoding='utf-8')
 print(f'Built core tests and behavior tests in {output}')
+
+turning = source[source.index('local function stopturn('):source.index('local function publish(')]
+turnheader = "-- Connected Discord-GitHub\n-- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.\ntype agent = any\n"
+(output / 'turning tests.luau').write_text(turnheader + turning + (tests / 'turning tests.luau').read_text(encoding='utf-8'), encoding='utf-8')
+print(f'Built turning tests in {output}')

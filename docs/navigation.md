@@ -18,16 +18,16 @@ Line references below match the current main script
 
 | Main script lines | Read for | Main point to explain |
 | --- | --- | --- |
-| 17-55 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
-| 57-97 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
-| 99-109 | Discovery and revision | Repeating the same observation does not invalidate routes again |
-| 113-184 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
-| 187-296 | Roblox adapter | Convert between floor-relative cells and world positions |
-| 299-403 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
-| 405-513 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
-| 515-652 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
-| 654-796 | Debris and collapse events | Check physical clearance, event order and current-run identity |
-| 798-929 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
+| 15-54 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
+| 56-95 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
+| 97-108 | Discovery and revision | Repeating the same observation does not invalidate routes again |
+| 110-180 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
+| 184-289 | Roblox adapter | Convert between floor-relative cells and world positions |
+| 342-448 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
+| 450-556 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
+| 558-693 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
+| 695-837 | Debris and collapse events | Check physical clearance, event order and current-run identity |
+| 839-979 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
 
 ## 1. How the map represents knowledge
 
@@ -111,7 +111,7 @@ The controller updates at a configured interval of 0.16 seconds and permits at m
 
 Nesting is how many control blocks a reader must stay inside at once. The main script uses early returns and `continue` for invalid or irrelevant cases, then keeps the useful path at a shallower indentation level. Arrival checks, recovery, route comparison and event validation have named functions with separate responsibilities.
 
-Examples to point to are `publish` at line 294, `maintainmove` at line 547, `update` at line 604 and `worldchanged` at line 713. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
+Examples to point to are `publish` at line 342, `maintainmove` at line 596, `update` at line 653 and `worldchanged` at line 762. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
 
 ## 9. Viewer readiness and repeatable demonstrations
 
@@ -126,3 +126,13 @@ After the selected collapses and agent completion, or the 240-second completion 
 Reset messages from another folder and duplicates for the same folder are ignored. Fragment callbacks remember their original folder, so the previous cycle cannot announce clearance for the replacement cycle. Old demo timestamps are cleared before seeding the new agents, preventing an earlier clearance time from releasing the new runner too soon.
 
 The acknowledgement and snapshot contain presentation state, not evidence of applicant identity or authorship.
+
+## 10. Turning ownership
+
+The main controller creates one `Attachment` and one `AlignOrientation` for each eligible server-owned rig. `OneAttachment` mode uses a goal frame, and finite torque, angular speed and response keep the solver from requesting rigid instant alignment. Torque is initially scaled by assembly mass and clamped; the recorded Play run is the evidence for these settings, not a claim that they fit every rig.
+
+The rig helper originally enables `Humanoid.AutoRotate`. The controller saves that value and temporarily disables it while the constraint owns facing. `drive` derives a horizontal waypoint direction, guards near-zero vectors before calling `Unit`, and updates the constraint goal without writing the root's `CFrame`. `MoveTo` continues to own translation.
+
+A nil target disables torque. Retirement destroys only the owned constraint and attachment and restores the exact original AutoRotate value, including false. Replay reaches the same cleanup through pause before reseeding. If either owned object disappears, the next command releases the surviving half and restores humanoid facing. Ineligible network ownership produces a warning and leaves no partial objects or borrowed setting.
+
+This implementation adds real constraint and attachment interaction to the submitted main file. It introduces no metatable or external library. Application acceptance remains a reviewer decision.

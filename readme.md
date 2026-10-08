@@ -18,7 +18,7 @@ Camera: WASD to move, E/Q for height, right mouse to look, middle mouse to pan, 
 
 ## Code
 
-The main example is one **929-line Luau script with 730 nonblank, noncomment code lines**. It combines A* with a binary heap, a partially known shared grid, selective replanning, bounded movement recovery and collapse-event validation
+The main example is one **979-line Luau script with 778 nonblank, noncomment code lines**. It combines A* with a binary heap, a partially known shared grid, selective replanning, bounded movement recovery, owned constraint turning and collapse-event validation
 
 Routes are calculated at runtime. Starting positions and the first collapse are staged to make the interaction visible
 
@@ -34,10 +34,10 @@ The scripts depend on the authored maze, rigs and existing HUD in the demo; clon
 
 ## Checks and limits
 
-[Included tests](tests/readme.md) reproduce **880 core assertions and 29 behavior assertions**, including an independent shortest-path comparison on 100 seeded maps. The instructions explain the fixture substitutions and exclusions
+[Included tests](tests/readme.md) reproduce **880 core assertions, 29 behavior assertions and 19 constraint-ownership assertions**, including an independent shortest-path comparison on 100 seeded maps. The instructions explain the fixture substitutions and exclusions
 
 A separate Studio run completed two cycles; the second recorded 15 arrivals, eight collapses and a shortcut from **31 remaining grid moves to 19**. This is recorded integration evidence, not a result produced by the unit fixtures
 
-Designed for this flat eight-stud grid and 15 agents. Multiplayer load, large crowds and mobile controls have not been validated
+Designed for this flat eight-stud grid and 15 agents. Two-client constraint/transform replication was checked in Studio; larger multiplayer loads, large crowds and mobile controls have not been validated
 
 Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox

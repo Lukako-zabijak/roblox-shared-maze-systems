@@ -21,7 +21,7 @@ for _, name in {"coretests", "behaviortests"} do
 end
 ```
 
-Expected output for this revision: `coretests 880` and `behaviortests 29`. A failed assertion stops with its message. Rebuild and repaste after changing the production source; the runner clones modules so each invocation avoids require's cached result
+Expected output for the Edit-mode suites: `coretests 880` and `behaviortests 29`. A failed assertion stops with its message. Rebuild and repaste after changing the production source; the runner clones modules so each invocation avoids require's cached result
 
 ## What runs
 
@@ -31,6 +31,25 @@ Expected output for this revision: `coretests 880` and `behaviortests 29`. A fai
 
 The behavior fixture replaces rig drawing, humanoid movement commands and client notifications with stubs, redirects world ownership checks to its folder, and uses the Default collision group. It removes startup and the scheduler. Its folder is destroyed after assertions, including assertion failure
 
-These are 909 assertions, not 909 independent scenarios. They do not test actual walking, multiplayer delivery, camera/HUD loading, replay scheduling or publication. The separate observed Studio run reached 15 arrivals, eight collapses and a 31-to-19 shortcut; watch those events in the demo to inspect the full integration
+The two existing suites contain 909 assertions, not 909 independent scenarios. They do not test actual walking, multiplayer delivery, camera/HUD loading, replay scheduling or publication. The separate observed Studio run reached 15 arrivals, eight collapses and a 31-to-19 shortcut; watch those events in the demo to inspect the full integration
 
 Generated modules are local test artifacts, not submission scripts or game runtime files. Delete the two imported modules after testing
+
+## Constraint ownership tests
+
+The builder also creates `tests/generated/turning tests.luau`. Import that file as a ModuleScript named `turningtests` in ServerStorage. Start Play and select the **Server** Command Bar context before running:
+
+```luau
+-- Connected Discord-GitHub
+-- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+local module = game.ServerStorage.turningtests:Clone()
+module.Parent = game.ServerStorage
+local ok, result = pcall(require, module)
+module:Destroy()
+assert(ok, result)
+print("turningtests", result)
+```
+
+Expected output: `turningtests 19`. The anchored-root denial intentionally emits one warning, then checks that no partial objects or borrowed setting survive. The fixture is removed after success or failure. These checks exercise real ownership APIs, attachment and constraint properties, goal directions, near-zero guards, repeated setup, missing owned objects, true/false restoration and cleanup after removal. They run synchronously and do not establish the solver's response during a full walk
+
+Full movement, corners, recovery, replay and client replication require the separate game integration checks. Remove imported test modules before saving or publishing the place

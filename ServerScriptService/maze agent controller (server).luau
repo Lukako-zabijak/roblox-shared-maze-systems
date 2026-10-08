@@ -227,7 +227,8 @@ type agent = { -- group private rig movement state separately from the shared ma
 	dirty: boolean, reason: string, started: number, progress: number, best: number, -- search causes and independent total versus progress timers keep replanning and stall recovery from masking each other
 	nextplan: number, nextcommand: number, failures: number, sharedat: number, peerchanges: number, -- planning command refresh recovery bounds and peer evidence need independent clocks and counters
 	peertrigger: number?, peersource: string, openings: {[number]: boolean}, shortcuts: number, demopath: boolean, demoentry: number?, demohold: boolean, -- pending peer and opening witnesses survive until comparison while demo flags remain separate from normal route validity
-} -- the display payload contains server evidence and leaves mutable navigation state with this controller
+	alignment: AlignOrientation?, attachment: Attachment?, autorotate: boolean?, -- owned turning objects and prior humanoid rotation survive only until this rig retires
+} -- private movement and turning ownership stays separate from the shared learned map
 -- keep the last blocker and scan time so moving debris can be checked again later
 type obstruction = {part: BasePart, checked: number} -- the part reference and scan age jointly determine whether cached physical evidence needs another query
 type collapse = {revision: number, phase: string, cell: number, parts: {BasePart}, footprint: {[number]: boolean}} -- phase order cell ownership fragment references and candidate footprints must travel together across updates
@@ -287,7 +288,54 @@ end -- internal mode remains the owner while its visible attribute mirrors the t
 
 -- all movement commands go through here
 -- sensing and shared discoveries ask for a new plan instead of steering over each other
+local function stopturn(state: agent) -- release only this controllers turning objects and restore the setting it borrowed
+	if state.alignment then state.alignment:Destroy() end -- repeated cleanup is safe even after root removal already destroyed the constraint
+	if state.attachment then state.attachment:Destroy() end -- keep the authored rig attachments outside this owned cleanup
+	if state.autorotate ~= nil and state.rig.humanoid.Parent then state.rig.humanoid.AutoRotate = state.autorotate end -- false is a valid saved setting so test nil rather than truthiness
+	state.alignment, state.attachment, state.autorotate = nil, nil, nil -- cleared ownership cannot be reused by an old state after replay
+end -- restored humanoid rotation has no competing constraint left behind
+
+local function startturn(state: agent) -- acquire one rotation owner after spawn setup has produced the physical rig
+	stopturn(state) -- repeated setup releases the earlier owned pair before replacing it
+	local root = state.rig.root -- the root assembly owns turning and its collider is already welded by the rig helper
+	local owned, problem = pcall(function() -- ownership failures must leave humanoid turning usable instead of abort controller startup
+		local canown, reason = root:CanSetNetworkOwnership() -- anchored or ineligible assemblies cannot adopt controlled turning
+		assert(canown, reason) -- fail before creating owned objects if this root cannot change its simulation owner
+		root:SetNetworkOwner(nil) -- keep this navigation assembly under the server choosing its targets
+		assert(root:GetNetworkOwner() == nil, "turning requires server network ownership") -- verify the actual owner before installing a second physics component
+	end) -- ownership acquisition has no constraint or humanoid changes to leak on failure
+	if not owned then warn("turning unavailable for " .. state.rig.model.Name .. " " .. tostring(problem)) return end -- a denied rig keeps its original humanoid facing and receives no partial constraint pair
+	local attachment = Instance.new("Attachment") -- one local identity frame lets the solver apply the desired root orientation
+	attachment.Name = "navturnattachment" -- a dedicated owned name makes duplicate pairs inspectable without touching authored attachments
+	local alignment = Instance.new("AlignOrientation") -- torque changes facing while humanoid MoveTo remains responsible for translation
+	alignment.Name = "navturnalignment" -- the owned constraint can be counted and inspected separately from the collider weld
+	alignment.Mode = Enum.OrientationAlignmentMode.OneAttachment -- one attachment uses the supplied goal frame without a second moving physical target
+	alignment.AlignType = Enum.AlignType.AllAxes -- this flat maze goal keeps the root upright while changing its horizontal heading
+	alignment.Attachment0 = attachment -- tie torque to the rigs own attachment rather than another assembly
+	alignment.CFrame = root.CFrame.Rotation -- begin from the current orientation before a real waypoint supplies another goal
+	alignment.MaxTorque = math.clamp(root.AssemblyMass * 1800, 5000, 100000) -- scale the initial torque limit with mass but keep finite lower and upper bounds
+	alignment.MaxAngularVelocity = math.rad(240) -- cap the initial turn rate instead of requesting an instantaneous direction change
+	alignment.Responsiveness = 12 -- finite response lets the solver converge without forcing rigid snapping
+	alignment.RigidityEnabled = false -- use the finite torque speed and response limits rather than the solvers maximum reaction
+	alignment.ReactionTorqueEnabled = false -- only this root receives torque and no second assembly is counter rotated
+	alignment.Enabled = false -- queued and observing rigs must not start turning before a valid movement target
+	state.attachment, state.alignment, state.autorotate = attachment, alignment, state.rig.humanoid.AutoRotate -- retain exact object ownership and the original true or false setting for cleanup
+	attachment.Parent = root -- publish the configured local frame only after the owned pair is complete
+	alignment.Parent = root -- attach the disabled solver after all of its parameters and target references are ready
+	state.rig.humanoid.AutoRotate = false -- the constraint becomes the sole active facing owner while humanoid walking continues
+end -- creation adds no route choice and leaves translation with the existing movement path
+
 local function drive(state: agent, target: Vector3?) -- one movement entry point prevents sensing and planning from issuing competing humanoid commands
+	local alignment = state.alignment -- a rig denied ownership may still use its original humanoid facing
+	if alignment then -- only an acquired owned pair participates in constraint turning
+		if not alignment.Parent or not state.attachment or state.attachment.Parent ~= state.rig.root then stopturn(state) -- losing either owned object restores the borrowed humanoid setting
+		else -- the valid pair can receive a goal without touching the root transform directly
+			local delta = if target then target - state.rig.root.Position else Vector3.zero -- a stop has no facing direction and must disable the old goal
+			local flat = Vector3.new(delta.X, 0, delta.Z) -- this authored flat maze turns horizontally while preserving humanoid translation
+			alignment.Enabled = flat.Magnitude > 0.05 -- near zero targets cannot produce a meaningful unit direction or facing frame
+			if alignment.Enabled then alignment.CFrame = CFrame.lookAt(Vector3.zero, flat.Unit) end -- a guarded unit vector yields an upright orientation for the solver without teleporting the rig
+		end -- only a complete active pair can own facing during this movement command
+	end -- target nil disables the constraint and later retirement releases its objects
 	state.rig.humanoid:MoveTo(target or state.rig.root.Position) -- a nil target cancels travel at the present position through the same humanoid command owner
 end -- the single movement owner remains separate from sensing and route invalidation
 
@@ -394,6 +442,7 @@ local function retire(state: agent, mode: string) -- release movement and probe 
 	state.route = {} -- a retired rig must not keep future waypoints that another observation could revive
 	state.rig.model:SetAttribute("ScannerActive", false) -- finished rigs should no longer display scans that imply ongoing navigation work
 	state.rig.model:SetAttribute("CommunicationState", "offline") -- offline presentation matches retired navigation instead of keeping the last communication pulse
+	stopturn(state) -- arrival pause failure removal and controller teardown all release turning through retirement
 	rigs.clear(state.rig) -- the drawing helper releases probes alongside navigation retirement so presentation matches the inactive state
 end -- retired state has no live route movement or misleading probe presentation
 
@@ -818,6 +867,7 @@ local function seed(riglist: {rigs.rig}) -- create separate per rig state over o
 			peertrigger = nil, peersource = "", openings = {}, shortcuts = 0, demopath = false, demoentry = nil, demohold = false, -- each replay must begin without pending blockage or crossing witnesses from its previous physical generation
 		} -- the private field group keeps these component roles together without merging their separate ownership
 		table.insert(states, state) -- the shared scheduler owns this state entry so search work can be limited across all rigs
+		startturn(state) -- acquire facing before the first recovery command but after lifecycle ownership enters the states list
 		rig.model:SetAttribute("currentcell", cell) -- the visible anchor must represent a reached center instead of a commanded destination
 		rig.model:SetAttribute("targetcell", cell) -- expose the destination separately so a target is never mistaken for arrival evidence
 		rig.model:SetAttribute("sharedroutechanges", 0) -- communication evidence counts only a changed adopted route instead of every shared scan
