@@ -9,6 +9,7 @@ Requires Python 3 and Roblox Studio. No Python packages, MCP server or live game
 5. Run this in Studio's Command Bar:
 
 ```luau
+-- Connected Discord-GitHub
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
 for _, name in {"coretests", "behaviortests"} do
     local module = game.ServerStorage[name]:Clone()

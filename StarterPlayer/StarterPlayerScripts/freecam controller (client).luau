@@ -1,3 +1,4 @@
+-- Connected Discord-GitHub
 --!strict
 
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.

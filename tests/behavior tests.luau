@@ -1,3 +1,4 @@
+-- Connected Discord-GitHub
 -- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
 local checks = 0
 local function check(condition: boolean, message: string)
