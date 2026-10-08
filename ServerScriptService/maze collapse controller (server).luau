@@ -1,7 +1,7 @@
 -- Connected Discord-GitHub
 --!strict
 
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 local debris_service = game:GetService("Debris")
 local physics_service = game:GetService("PhysicsService")
 local run_service = game:GetService("RunService")

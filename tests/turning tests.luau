@@ -1,5 +1,5 @@
 -- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 local fixture = Instance.new("Model") -- isolate physical test parts away from the authored maze and its agent state
 fixture.Name = "turningtestfixture" -- the owner is inspectable and removed on both success and failure
 fixture.Parent = workspace -- network ownership checks need a live server physics assembly
@@ -20,7 +20,13 @@ local ok, result = pcall(function() -- destroy the isolated fixture even if an a
         assert(condition, message) -- stop the fixture at the first failed lifecycle or target contract
         count += 1 -- successful checks remain distinguishable from skipped cases
     end -- all test decisions share one assertion owner
-    local state = {rig = {model = fixture, root = root, humanoid = humanoid}} -- tests own one private controller state over real engine components
+    local state = setmetatable({rig = {model = fixture, root = root, humanoid = humanoid}, route = {}}, agentmetatable) -- tests own one private controller state over real engine components
+    local peer = setmetatable({rig = state.rig, route = {}}, agentmetatable) -- a second state can share behavior without sharing its route storage
+    check(getmetatable(state) == getmetatable(peer), "different lifecycle metatables") -- all agents must use the same method lookup owner
+    check(rawget(state, "drive") == nil and state.drive == peer.drive, "methods copied or not shared") -- behavior lives once in the metatable rather than on each rig
+    check(state.route ~= peer.route, "route storage shared between agents") -- method sharing cannot turn mutable route data into shared state
+    state.route[1] = 42 -- changing one rig route must not alter its peers journey
+    check(peer.route[1] == nil, "peer route changed through shared data") -- independent per rig fields are part of the object boundary
     local function pairsowned() -- duplicate setup must not create several facing owners on the same root
         local attachments, alignments = 0, 0 -- count owned names independently from the authored attachment
         for _, child in root:GetChildren() do -- inspect only this fixtures children rather than scan unrelated workspace objects
@@ -30,7 +36,7 @@ local ok, result = pcall(function() -- destroy the isolated fixture even if an a
         return attachments, alignments -- both resource types are checked independently
     end -- counting is test evidence and never controller authority
     humanoid.AutoRotate = true -- verify restoring true separately from the valid false case later
-    startturn(state) -- acquire the same functions extracted from the current main controller
+    state:startturn() -- acquire the same functions extracted from the current main controller
     check(state.alignment ~= nil and state.attachment ~= nil, "owned pair missing") -- eligible server physics must produce the complete pair
     check(root:GetNetworkOwner() == nil, "root not server owned") -- the controller must verify actual server simulation authority
     check(not humanoid.AutoRotate and state.autorotate == true, "AutoRotate handoff") -- humanoid and constraint must not compete for facing
@@ -39,41 +45,41 @@ local ok, result = pcall(function() -- destroy the isolated fixture even if an a
     check(state.alignment.MaxTorque >= 5000 and state.alignment.MaxTorque <= 100000 and state.alignment.MaxAngularVelocity > 0, "turn bounds") -- parameters must remain finite and within the documented design limits
     check(not state.alignment.Enabled, "queued solver active") -- setup alone must not turn a queued or observing rig
     local position, pose = root.Position, root.CFrame -- goal updates must not manually teleport or rotate the root
-    drive(state, position + Vector3.new(8, 20, 0)) -- a vertical offset must not tilt horizontal navigation facing
+    state:drive(position + Vector3.new(8, 20, 0)) -- a vertical offset must not tilt horizontal navigation facing
     check(state.alignment.Enabled and state.alignment.CFrame.LookVector:Dot(Vector3.xAxis) > 0.99999, "horizontal goal") -- the goal points along the horizontal waypoint direction
     check(root.CFrame == pose, "goal update wrote root CFrame") -- the physical solver owns rotation rather than a direct transform assignment
-    drive(state, position - Vector3.new(8, 0, 0)) -- a reversal represents recovery toward the reached anchor
+    state:drive(position - Vector3.new(8, 0, 0)) -- a reversal represents recovery toward the reached anchor
     check(state.alignment.CFrame.LookVector:Dot(-Vector3.xAxis) > 0.99999, "recovery reversal") -- recovery must not keep the old forward orientation goal
-    drive(state, position + Vector3.new(0.01, 2, 0)) -- a near zero horizontal vector must not be normalized into an unstable direction
+    state:drive(position + Vector3.new(0.01, 2, 0)) -- a near zero horizontal vector must not be normalized into an unstable direction
     check(not state.alignment.Enabled, "near zero target active") -- tiny or vertical only targets disable stale torque
-    drive(state, position) -- exact arrival also supplies no meaningful facing direction
+    state:drive(position) -- exact arrival also supplies no meaningful facing direction
     check(not state.alignment.Enabled, "zero target active") -- the goal frame must never depend on a zero Unit vector
-    drive(state, nil) -- pause and retirement use the existing nil movement command path
+    state:drive(nil) -- pause and retirement use the existing nil movement command path
     check(not state.alignment.Enabled, "stop retained torque") -- a stop cannot leave the previous waypoint orientation active
-    startturn(state) -- repeated acquisition must release the earlier owner before creating a replacement
+    state:startturn() -- repeated acquisition must release the earlier owner before creating a replacement
     local attachments, alignments = pairsowned() -- count actual resources after the replacement path
     check(attachments == 1 and alignments == 1 and state.autorotate == true, "duplicate setup or lost original rotation") -- replacement keeps the original borrowed value rather than capture the temporary false setting
     state.attachment:Destroy() -- simulate an externally removed owned frame while the rig survives
-    drive(state, position + Vector3.new(0, 0, -8)) -- missing pair handling must release torque and restore normal humanoid facing
+    state:drive(position + Vector3.new(0, 0, -8)) -- missing pair handling must release torque and restore normal humanoid facing
     attachments, alignments = pairsowned() -- a broken pair must not leave its surviving counterpart behind
     check(attachments == 0 and alignments == 0 and humanoid.AutoRotate, "missing attachment cleanup") -- fallback restores the original setting without retaining an incomplete solver
     humanoid.AutoRotate = false -- false is a legitimate authored setting and must not be mistaken for no saved value
-    startturn(state) -- acquire with the alternate original setting
+    state:startturn() -- acquire with the alternate original setting
     state.alignment:Destroy() -- simulate losing the other half of the owned pair
-    drive(state, position + Vector3.new(8, 0, 0)) -- losing a constraint must release its attachment and borrowed setting too
+    state:drive(position + Vector3.new(8, 0, 0)) -- losing a constraint must release its attachment and borrowed setting too
     check(state.alignment == nil and state.attachment == nil and not humanoid.AutoRotate, "false restoration or constraint removal") -- the nil sentinel must preserve an original false value
-    stopturn(state) -- cleanup is allowed after the fallback already removed every owned resource
-    stopturn(state) -- repeated retirement or owner removal must stay harmless
+    state:stopturn() -- cleanup is allowed after the fallback already removed every owned resource
+    state:stopturn() -- repeated retirement or owner removal must stay harmless
     check(authored.Parent == root, "authored attachment destroyed") -- owned cleanup cannot remove unrelated rig assets
     root.Anchored = true -- this assembly is deliberately ineligible for manual network ownership
     humanoid.AutoRotate = true -- denial must leave its original rotation setting usable
-    startturn(state) -- expected denial must not abort the whole navigation controller or leak partial objects
+    state:startturn() -- expected denial must not abort the whole navigation controller or leak partial objects
     attachments, alignments = pairsowned() -- denied setup must create neither owned resource
     check(attachments == 0 and alignments == 0 and state.autorotate == nil and humanoid.AutoRotate, "ownership denial leaked state") -- acquisition failure precedes all constraint and humanoid changes
     root.Anchored = false -- restore eligibility before testing removal of the actual physical owner
-    startturn(state) -- create one final owned pair before its model is destroyed
+    state:startturn() -- create one final owned pair before its model is destroyed
     fixture:Destroy() -- model removal destroys physical objects before controller cleanup may run
-    stopturn(state) -- dangling Lua references must be safe to release after engine destruction
+    state:stopturn() -- dangling Lua references must be safe to release after engine destruction
     check(state.alignment == nil and state.attachment == nil and state.autorotate == nil, "removed model retained ownership") -- teardown must leave no retained turning references
     return count -- the report counts only assertions actually reached and passed
 end) -- the fixture result retains the first failed invariant if any

@@ -38,7 +38,9 @@ checks = (tests / 'behavior tests.luau').read_text(encoding='utf-8')
 (output / 'behavior tests.luau').write_text(fixture + behavior + checks, encoding='utf-8')
 print(f'Built core tests and behavior tests in {output}')
 
-turning = source[source.index('local function stopturn('):source.index('local function publish(')]
-turnheader = "-- Connected Discord-GitHub\n-- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.\ntype agent = any\n"
+turning = source[source.index('local function setmode('):source.index('local function publish(')]
+turning += source[source.index('local function retire('):source.index('local function recordopenings(')]
+turning = 'local rigs = {clear = function() end}\n' + turning
+turnheader = "-- Connected Discord-GitHub\n-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.\ntype agent = any\n"
 (output / 'turning tests.luau').write_text(turnheader + turning + (tests / 'turning tests.luau').read_text(encoding='utf-8'), encoding='utf-8')
 print(f'Built turning tests in {output}')

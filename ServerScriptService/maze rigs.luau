@@ -1,7 +1,7 @@
 -- Connected Discord-GitHub
 --!strict
 
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 export type rig = {model: Model, humanoid: Humanoid, root: BasePart, markers: {{BasePart}}, raycastparams: RaycastParams}
 local physicsservice = game:GetService("PhysicsService")
 local agentcollisiongroup = "MazeAgents"

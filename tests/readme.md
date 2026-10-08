@@ -10,7 +10,7 @@ Requires Python 3 and Roblox Studio. No Python packages, MCP server or live game
 
 ```luau
 -- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 for _, name in {"coretests", "behaviortests"} do
     local module = game.ServerStorage[name]:Clone()
     module.Parent = game.ServerStorage
@@ -41,7 +41,7 @@ The builder also creates `tests/generated/turning tests.luau`. Import that file 
 
 ```luau
 -- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 local module = game.ServerStorage.turningtests:Clone()
 module.Parent = game.ServerStorage
 local ok, result = pcall(require, module)
@@ -50,6 +50,6 @@ assert(ok, result)
 print("turningtests", result)
 ```
 
-Expected output: `turningtests 19`. The anchored-root denial intentionally emits one warning, then checks that no partial objects or borrowed setting survive. The fixture is removed after success or failure. These checks exercise real ownership APIs, attachment and constraint properties, goal directions, near-zero guards, repeated setup, missing owned objects, true/false restoration and cleanup after removal. They run synchronously and do not establish the solver's response during a full walk
+Expected output: `turningtests 23`. The anchored-root denial intentionally emits one warning, then checks that no partial objects or borrowed setting survive. The fixture is removed after success or failure. These checks exercise real ownership APIs, attachment and constraint properties, goal directions, near-zero guards, repeated setup, missing owned objects, true/false restoration and cleanup after removal. They also check shared inherited methods and independent per-agent route storage. They run synchronously and do not establish the solver's response during a full walk
 
 Full movement, corners, recovery, replay and client replication require the separate game integration checks. Remove imported test modules before saving or publishing the place

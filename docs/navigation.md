@@ -22,12 +22,12 @@ Line references below match the current main script
 | 56-95 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
 | 97-108 | Discovery and revision | Repeating the same observation does not invalidate routes again |
 | 110-180 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
-| 184-289 | Roblox adapter | Convert between floor-relative cells and world positions |
-| 342-448 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
-| 450-556 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
-| 558-693 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
-| 695-837 | Debris and collapse events | Check physical clearance, event order and current-run identity |
-| 839-979 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
+| 184-290 | Roblox adapter | Convert between floor-relative cells and world positions |
+| 343-452 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
+| 454-560 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
+| 562-697 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
+| 699-841 | Debris and collapse events | Check physical clearance, event order and current-run identity |
+| 843-983 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
 
 ## 1. How the map represents knowledge
 
@@ -111,7 +111,7 @@ The controller updates at a configured interval of 0.16 seconds and permits at m
 
 Nesting is how many control blocks a reader must stay inside at once. The main script uses early returns and `continue` for invalid or irrelevant cases, then keeps the useful path at a shallower indentation level. Arrival checks, recovery, route comparison and event validation have named functions with separate responsibilities.
 
-Examples to point to are `publish` at line 342, `maintainmove` at line 596, `update` at line 653 and `worldchanged` at line 762. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
+Examples to point to are `publish` at line 343, `maintainmove` at line 600, `update` at line 657 and `worldchanged` at line 766. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
 
 ## 9. Viewer readiness and repeatable demonstrations
 
@@ -135,4 +135,12 @@ The rig helper originally enables `Humanoid.AutoRotate`. The controller saves th
 
 A nil target disables torque. Retirement destroys only the owned constraint and attachment and restores the exact original AutoRotate value, including false. Replay reaches the same cleanup through pause before reseeding. If either owned object disappears, the next command releases the surviving half and restores humanoid facing. Ineligible network ownership produces a warning and leaves no partial objects or borrowed setting.
 
-This implementation adds real constraint and attachment interaction to the submitted main file. It introduces no metatable or external library. Application acceptance remains a reviewer decision.
+This implementation adds real constraint and attachment interaction to the submitted main file. Agent lifecycle behavior is shared through a metatable; no external library is introduced. Application acceptance remains a reviewer decision.
+
+## 11. Shared agent behavior
+
+Each seed creates a fresh data table and attaches the same `agentmetatable`. Its `__index` points to one private `agentmethods` table holding the actual startturn, stopturn, drive and retire functions. Normal method calls now use colon syntax so the agent is passed as the first argument to that shared function. No method function is copied onto each rig
+
+Routes, timers, evidence, original AutoRotate and owned instances remain ordinary fields on the individual data table. There is no `__newindex`, so writes do not alter the shared behavior table. Missing optional fields still resolve to nil. The constructor's local type cast documents the fixed interface supplied by the known private method table
+
+The object fixture checks equal metatables and inherited function references, absent own method fields, distinct route tables and mutation isolation. The existing navigation fixture uses this same metatable so it tests real command and retirement dispatch rather than a separate wrapper

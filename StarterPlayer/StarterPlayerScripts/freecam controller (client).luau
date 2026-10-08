@@ -1,7 +1,7 @@
 -- Connected Discord-GitHub
 --!strict
 
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 local context_action_service = game:GetService("ContextActionService")
 local players = game:GetService("Players")
 local run_service = game:GetService("RunService")

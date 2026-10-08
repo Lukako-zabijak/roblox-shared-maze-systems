@@ -1,5 +1,5 @@
 -- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 --!strict
 
 -- mazerigs sets up the rigs and probes, this bit handles movement and shared knowledge
@@ -228,6 +228,7 @@ type agent = { -- group private rig movement state separately from the shared ma
 	nextplan: number, nextcommand: number, failures: number, sharedat: number, peerchanges: number, -- planning command refresh recovery bounds and peer evidence need independent clocks and counters
 	peertrigger: number?, peersource: string, openings: {[number]: boolean}, shortcuts: number, demopath: boolean, demoentry: number?, demohold: boolean, -- pending peer and opening witnesses survive until comparison while demo flags remain separate from normal route validity
 	alignment: AlignOrientation?, attachment: Attachment?, autorotate: boolean?, -- owned turning objects and prior humanoid rotation survive only until this rig retires
+	startturn: (agent) -> (), stopturn: (agent) -> (), drive: (agent, Vector3?) -> (), retire: (agent, string) -> (), -- inherited lifecycle signatures describe the shared behavior every rig can call
 } -- private movement and turning ownership stays separate from the shared learned map
 -- keep the last blocker and scan time so moving debris can be checked again later
 type obstruction = {part: BasePart, checked: number} -- the part reference and scan age jointly determine whether cached physical evidence needs another query
@@ -296,7 +297,7 @@ local function stopturn(state: agent) -- release only this controllers turning o
 end -- restored humanoid rotation has no competing constraint left behind
 
 local function startturn(state: agent) -- acquire one rotation owner after spawn setup has produced the physical rig
-	stopturn(state) -- repeated setup releases the earlier owned pair before replacing it
+	state:stopturn() -- repeated setup releases the earlier owned pair before replacing it
 	local root = state.rig.root -- the root assembly owns turning and its collider is already welded by the rig helper
 	local owned, problem = pcall(function() -- ownership failures must leave humanoid turning usable instead of abort controller startup
 		local canown, reason = root:CanSetNetworkOwnership() -- anchored or ineligible assemblies cannot adopt controlled turning
@@ -328,7 +329,7 @@ end -- creation adds no route choice and leaves translation with the existing mo
 local function drive(state: agent, target: Vector3?) -- one movement entry point prevents sensing and planning from issuing competing humanoid commands
 	local alignment = state.alignment -- a rig denied ownership may still use its original humanoid facing
 	if alignment then -- only an acquired owned pair participates in constraint turning
-		if not alignment.Parent or not state.attachment or state.attachment.Parent ~= state.rig.root then stopturn(state) -- losing either owned object restores the borrowed humanoid setting
+		if not alignment.Parent or not state.attachment or state.attachment.Parent ~= state.rig.root then state:stopturn() -- losing either owned object restores the borrowed humanoid setting
 		else -- the valid pair can receive a goal without touching the root transform directly
 			local delta = if target then target - state.rig.root.Position else Vector3.zero -- a stop has no facing direction and must disable the old goal
 			local flat = Vector3.new(delta.X, 0, delta.Z) -- this authored flat maze turns horizontally while preserving humanoid translation
@@ -430,21 +431,24 @@ local function beginmove(state: agent, target: number, mode: string, now: number
 	setmode(state, mode) -- synchronize the move or recovery mode with its inspection attribute before the command is issued
 	state.rig.model:SetAttribute("currentcell", state.anchor) -- the visible anchor must represent a reached center instead of a commanded destination
 	state.rig.model:SetAttribute("targetcell", target) -- expose the destination separately so a target is never mistaken for arrival evidence
-	drive(state, worldpoint(target)) -- the grid target passes through the common center transform before the sole movement owner commands it
+	state:drive(worldpoint(target)) -- the grid target passes through the common center transform before the sole movement owner commands it
 end -- fresh timers belong to this target while later command refreshes leave them intact
 
 local function retire(state: agent, mode: string) -- release movement and probe work together so finished or removed rigs cannot keep acting
 	setmode(state, mode) -- synchronize the move or recovery mode with its inspection attribute before the command is issued
 	if state.rig.root.Parent and state.rig.humanoid.Parent then -- only surviving rig components can accept the stop command during removal or teardown
-		drive(state, nil) -- cancel travel through the common command entry instead of leave the old target active
+		state:drive(nil) -- cancel travel through the common command entry instead of leave the old target active
 	end -- retirement clears route and probes even when removed physical components cannot accept a stop command
 	state.rig.model:SetAttribute("currentcell", state.anchor) -- the visible anchor must represent a reached center instead of a commanded destination
 	state.route = {} -- a retired rig must not keep future waypoints that another observation could revive
 	state.rig.model:SetAttribute("ScannerActive", false) -- finished rigs should no longer display scans that imply ongoing navigation work
 	state.rig.model:SetAttribute("CommunicationState", "offline") -- offline presentation matches retired navigation instead of keeping the last communication pulse
-	stopturn(state) -- arrival pause failure removal and controller teardown all release turning through retirement
+	state:stopturn() -- arrival pause failure removal and controller teardown all release turning through retirement
 	rigs.clear(state.rig) -- the drawing helper releases probes alongside navigation retirement so presentation matches the inactive state
 end -- retired state has no live route movement or misleading probe presentation
+
+local agentmethods = {startturn = startturn, stopturn = stopturn, drive = drive, retire = retire} -- store lifecycle functions once while each rig keeps its own routes timers and instances
+local agentmetatable = {__index = agentmethods} -- missing method lookup uses this shared table and ordinary state writes stay on the individual rig
 
 -- count a shortcut only when the new route uses a reopened cell the old route didn't use
 local function recordopenings(state: agent, route: {number}, cost: number, oldstart: number, oldcost: number, now: number) -- compare real old and new routes before counting a shortcut so notices alone prove nothing
@@ -543,12 +547,12 @@ local function plan(state: agent, now: number) -- compare against the old route 
 	end -- only a usable search result reaches goal or movement handling below
 	-- only the anchor in the route, we started at the goal already
 	if #route == 1 then -- a route containing only the anchor means the rig is already at the requested goal
-		retire(state, "arrived") -- stop movement and probe work together once the actual goal center has been reached
+		state:retire("arrived") -- stop movement and probe work together once the actual goal center has been reached
 		return -- leave this path before later work can undo it because old evidence is consumed before the replacement becomes the rigs active route
 	end -- movement below requires a future waypoint because an anchor only route already retired as arrived
 	if state.demohold then -- a valid route may be recorded during the demo pause without permission to walk it yet
 		state.target = state.anchor -- keep the visible destination at the reached center during the presentation hold
-		drive(state, nil) -- cancel travel through the common command entry instead of leave the old target active
+		state:drive(nil) -- cancel travel through the common command entry instead of leave the old target active
 		setmode(state, "observing") -- a demo hold may have a valid route but movement stays paused until clearance or its deadline
 		return -- leave this path before later work can undo it because old evidence is consumed before the replacement becomes the rigs active route
 	end -- only an unheld valid route may command its first future cell below
@@ -580,11 +584,11 @@ local function reachcell(state: agent, now: number) -- commit arrival before lea
 	if state.target == democell and state.anchor ~= democell then state.demoentry = state.anchor end -- save the reached entry side once the opening is entered so turning back can be rejected later
 	state.anchor = state.target -- only physical arrival advances the anchor that future sensing and planning are allowed to use
 	state.failures = 0 -- a reached center is successful progress and ends the current chain of stalled attempts
-	drive(state, nil) -- cancel travel through the common command entry instead of leave the old target active
+	state:drive(nil) -- cancel travel through the common command entry instead of leave the old target active
 	setmode(state, "planning") -- arrival offers a safe center for replanning before another waypoint can be commanded
 	sense(state, now) -- new neighbors are learned from the reached center before deciding whether the remainder is still valid
 	if state.anchor == goalcell then -- arrival at the destination takes priority over sending another queued waypoint
-		retire(state, "arrived") -- stop movement and probe work together once the actual goal center has been reached
+		state:retire("arrived") -- stop movement and probe work together once the actual goal center has been reached
 		return -- leave this path before later work can undo it because new knowledge and the next step use the physically reached anchor
 	end -- another waypoint can be issued only when physical arrival has not completed the journey
 	if not state.dirty and state.cursor < #state.route then -- reuse only a still valid route with another future cell instead of spend a search at every center
@@ -611,7 +615,7 @@ local function maintainmove(state: agent, now: number) -- combine progress and t
 		-- a shove can move the agent into another cell, only accept it if the body fits there
 		local cell = cellfromworld(rig.root.Position) -- the current id ties this step to grid bounds instead of relying on instance names
 		if not cell or readcell(cell) or state.failures >= 4 then -- an alternate anchor must be inside the grid physically clear and within the recovery attempt limit
-			retire(state, "stopped") -- a dead removed or unrecoverable rig releases movement and presentation instead of keeping live work
+			state:retire("stopped") -- a dead removed or unrecoverable rig releases movement and presentation instead of keeping live work
 			return -- leave this path before later work can undo it because only active travel owns command refreshes and recovery stays bounded
 		end -- an alternate recovery target exists only after grid clearance and attempt bounds passed
 		state.anchor = cell -- accept an alternate center only after its bounds and body clearance checks passed
@@ -623,7 +627,7 @@ local function maintainmove(state: agent, now: number) -- combine progress and t
 	if now < state.nextcommand then return end -- command cadence is independent of useful progress checks so refreshes cannot reset stall deadlines
 	-- send the move again, dont restart the stuck timers
 	state.nextcommand = now + 0.5 -- limit humanoid command refreshes while the faster scheduler still checks observations and deadlines
-	drive(state, worldpoint(state.target)) -- refresh the same floor relative target without restarting the total or useful progress deadlines
+	state:drive(worldpoint(state.target)) -- refresh the same floor relative target without restarting the total or useful progress deadlines
 end -- only active travel owns command refreshes and recovery stays bounded
 
 -- keep arrival/progress checks separate from the lifecycle states and the timeout recovery
@@ -657,7 +661,7 @@ local function update(state: agent, now: number): boolean -- offer planning work
 	end -- terminal rigs are excluded from route work so another discovery cannot revive their completed journey
 	-- a removed or dead rig must release its route and probes rather than leave live movement work behind
 	if not rig.model:IsDescendantOf(agents) or rig.humanoid.Health <= 0 or not rig.root.Parent then -- a removed dead or incomplete rig must retire instead of keep a command or search eligibility
-		retire(state, "stopped") -- a dead removed or unrecoverable rig releases movement and presentation instead of keeping live work
+		state:retire("stopped") -- a dead removed or unrecoverable rig releases movement and presentation instead of keeping live work
 		return false -- this path cannot offer normal planning work until its invalid or terminal movement state is handled
 	end -- only a surviving active rig reaches the mode specific movement and search decisions
 	if state.mode == "observing" then -- the demo hold can update its plan but must not issue a new walking target yet
@@ -845,7 +849,7 @@ local function stop() -- disconnect event owners before clearing state so teardo
 		connection:Disconnect() -- release the callback before dropping its state references so the scheduler and remotes stop producing work
 	end -- all owned producers are disconnected before state is retired or cleared
 	for _, state in states do -- each private movement state must obey the shared lifecycle boundary instead of keep an independent command
-		retire(state, "stopped") -- a dead removed or unrecoverable rig releases movement and presentation instead of keeping live work
+		state:retire("stopped") -- a dead removed or unrecoverable rig releases movement and presentation instead of keeping live work
 	end -- closed ownership prevents later callbacks from reviving cleared navigation state
 	table.clear(states) -- old per rig routes must not survive teardown or be reused in another navigation lifetime
 	table.clear(blockers) -- cached obstruction references no longer belong to active scans and can be released
@@ -860,14 +864,14 @@ local function seed(riglist: {rigs.rig}) -- create separate per rig state over o
 	for _, rig in riglist do -- each authored rig receives fresh private movement state over the same common observation map
 		local cell = cellfromworld(rig.root.Position) -- the current id ties this step to grid bounds instead of relying on instance names
 		assert(cell, "agent is outside the navigation grid") -- spawn setup must place every rig in a valid tile before its route and target ids are created
-		local state: agent = { -- new replay state owns its own route timers and evidence instead of borrow a previous rigs journey
+		local state = setmetatable({ -- attach shared behavior to fresh per rig fields rather than copy methods or share mutable routes
 			rig = rig, mode = "planning", anchor = cell, target = cell, route = {}, cursor = 1, -- a new rig starts at its valid cell with no assumed route and physical references kept outside map knowledge
 			dirty = true, reason = "initial plan", started = 0, progress = 0, best = math.huge, -- fresh state requires a first search and cannot inherit movement progress or a previous run cause
 			nextplan = 0, nextcommand = 0, failures = 0, sharedat = -math.huge, peerchanges = 0, -- ready work begins without old deadlines while an infinitely old pulse means no peer message has been seen yet
 			peertrigger = nil, peersource = "", openings = {}, shortcuts = 0, demopath = false, demoentry = nil, demohold = false, -- each replay must begin without pending blockage or crossing witnesses from its previous physical generation
-		} -- the private field group keeps these component roles together without merging their separate ownership
+		}, agentmetatable) :: agent -- this constructor has all private fields and __index supplies the declared lifecycle methods
 		table.insert(states, state) -- the shared scheduler owns this state entry so search work can be limited across all rigs
-		startturn(state) -- acquire facing before the first recovery command but after lifecycle ownership enters the states list
+		state:startturn() -- acquire facing before the first recovery command but after lifecycle ownership enters the states list
 		rig.model:SetAttribute("currentcell", cell) -- the visible anchor must represent a reached center instead of a commanded destination
 		rig.model:SetAttribute("targetcell", cell) -- expose the destination separately so a target is never mistaken for arrival evidence
 		rig.model:SetAttribute("sharedroutechanges", 0) -- communication evidence counts only a changed adopted route instead of every shared scan
@@ -894,7 +898,7 @@ table.insert(connections, players.PlayerRemoving:Connect(function(player) viewer
 
 local function pause() -- retire remaining movers before wall restoration so new solid walls never appear around active commands
 	for _, state in states do -- each private movement state must obey the shared lifecycle boundary instead of keep an independent command
-		if state.mode ~= "arrived" and state.mode ~= "stopped" then retire(state, "stopped") end -- preserve completed arrival evidence while stopping only the movers before wall restoration
+		if state.mode ~= "arrived" and state.mode ~= "stopped" then state:retire("stopped") end -- preserve completed arrival evidence while stopping only the movers before wall restoration
 	end -- wall restoration can proceed only after active movement has been retired
 end -- wall restoration can proceed only after active movement has been retired
 

@@ -1,7 +1,7 @@
 -- Connected Discord-GitHub
 --!strict
 
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 local replicated_storage = game:GetService("ReplicatedStorage")
 local tween_service = game:GetService("TweenService")
 local httpservice = game:GetService("HttpService")

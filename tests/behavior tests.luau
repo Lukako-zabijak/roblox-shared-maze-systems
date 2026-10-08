@@ -1,5 +1,5 @@
 -- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 local checks = 0
 local function check(condition: boolean, message: string)
 	assert(condition, message)
@@ -23,6 +23,7 @@ local state = {
 	nextplan = 0, nextcommand = 0, failures = 0, sharedat = 0, peerchanges = 0,
 	peertrigger = nil, peersource = "", openings = {}, shortcuts = 0,
 }
+setmetatable(state, agentmetatable) -- fixture commands must exercise the same inherited behavior as real rigs
 table.insert(states, state)
 local fragment = Instance.new("Part")
 fragment.Size = Vector3.new(3, 3, 3)

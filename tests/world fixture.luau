@@ -1,5 +1,5 @@
 -- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, killerox3905 on Roblox.
+-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 local testworld = Instance.new("Folder")
 testworld.Name = "navigationtestfixture"
 testworld.Parent = workspace
