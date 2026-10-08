@@ -1,6 +1,6 @@
 # Navigation walkthrough
 
-Source: [main navigation script](../ServerScriptService/mazeagentcontroller%20%28server%29)
+Source: [main navigation script](../ServerScriptService/maze%20agent%20controller%20%28server%29.luau)
 
 Line references below match the current main script
 
@@ -22,12 +22,12 @@ Line references below match the current main script
 | 57-97 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
 | 99-109 | Discovery and revision | Repeating the same observation does not invalidate routes again |
 | 113-184 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
-| 187-295 | Roblox adapter | Convert between floor-relative cells and world positions |
-| 298-394 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
-| 396-504 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
-| 506-642 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
-| 644-786 | Debris and collapse events | Check physical clearance, event order and current-run identity |
-| 788-924 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
+| 187-296 | Roblox adapter | Convert between floor-relative cells and world positions |
+| 299-403 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
+| 405-513 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
+| 515-652 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
+| 654-796 | Debris and collapse events | Check physical clearance, event order and current-run identity |
+| 798-929 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
 
 ## 1. How the map represents knowledge
 
@@ -111,7 +111,7 @@ The controller updates at a configured interval of 0.16 seconds and permits at m
 
 Nesting is how many control blocks a reader must stay inside at once. The main script uses early returns and `continue` for invalid or irrelevant cases, then keeps the useful path at a shallower indentation level. Arrival checks, recovery, route comparison and event validation have named functions with separate responsibilities.
 
-Examples to point to are `publish` at line 293, `maintainmove` at line 538, `update` at line 595 and `worldchanged` at line 703. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
+Examples to point to are `publish` at line 294, `maintainmove` at line 547, `update` at line 604 and `worldchanged` at line 713. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
 
 ## 9. Viewer readiness and repeatable demonstrations
 
