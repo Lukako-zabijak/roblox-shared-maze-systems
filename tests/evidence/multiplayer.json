@@ -1,0 +1,83 @@
+{
+  "issuer": "Codex native StudioTestService two client test",
+  "tested_at": "2026-10-11",
+  "place": 113425488924507,
+  "place_version": 49,
+  "canonical_sha256": "5f011b5cd38babbbf20305a3b3439a6a07c72f9619746bea2a723b34dcc281de",
+  "staged_sha256": "bf6646e5569e180f1a5e698c6c08ee087258804ddf8a99c3dd60718b06171b8e",
+  "rotation_variant": "One additional test-only substitution in Edit mode changes setup AutoRotate to index modulo two equality zero",
+  "result": {
+    "ok": true,
+    "removalbefore": {
+      "restored": 8,
+      "guardians": 1,
+      "pairs": 15,
+      "expected": 15,
+      "dots": 630,
+      "debris": true,
+      "records": 1,
+      "attachments": 15
+    },
+    "clients": {
+      "Player1": {
+        "agents": 15,
+        "minup": 0.9999999403953552,
+        "cyan": true,
+        "samples": 56,
+        "camera": true,
+        "hud": true,
+        "green": true,
+        "maxpairs": 15,
+        "turns": 50,
+        "maxdots": 630,
+        "red": true
+      },
+      "Player2": {
+        "agents": 15,
+        "minup": 0.9999998807907104,
+        "cyan": true,
+        "samples": 55,
+        "camera": true,
+        "hud": true,
+        "green": true,
+        "maxpairs": 15,
+        "turns": 47,
+        "maxdots": 630,
+        "red": true
+      }
+    },
+    "destroyed": {
+      "restored": 15,
+      "guardians": 0,
+      "pairs": 0,
+      "expected": 15,
+      "dots": 0,
+      "debris": false,
+      "records": 0,
+      "attachments": 0
+    },
+    "before": {
+      "restored": 0,
+      "guardians": 1,
+      "pairs": 15,
+      "expected": 15,
+      "dots": 630,
+      "debris": true,
+      "records": 1,
+      "attachments": 15
+    },
+    "lifecycle": true,
+    "activecollapse": true,
+    "removed": {
+      "restored": 15,
+      "guardians": 0,
+      "pairs": 0,
+      "expected": 15,
+      "dots": 0,
+      "debris": false,
+      "records": 0,
+      "attachments": 0
+    },
+    "problem": "none"
+  }
+}

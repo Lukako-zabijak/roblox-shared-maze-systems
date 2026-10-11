@@ -1,43 +1,18 @@
 # Run the checks
 
-Requires Python 3 and Roblox Studio. No Python packages, MCP server or live game access are needed
+From the repository root, run `python "tests/build tests.py"`. The builder extracts the current production functions and writes ignored files under `tests/generated`; it fails if its source boundaries change
 
-1. From the repository root, run `python tests/build%20tests.py`
-2. Open a blank baseplate in Studio and stay in Edit mode
-3. Create two ModuleScripts in ServerStorage named `coretests` and `behaviortests`
-4. Paste `tests/generated/core tests.luau` into coretests and `tests/generated/behavior tests.luau` into behaviortests
-5. Run this in Studio's Command Bar:
+With the standalone Luau interpreter on PATH, run `luau "tests/generated/search tests.luau"`. Expected output is `baseline=960 additional=1182 dispatches=11`; elapsed-time slicing can change the dispatch count on a slower machine
 
-```luau
--- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
-for _, name in {"coretests", "behaviortests"} do
-    local module = game.ServerStorage[name]:Clone()
-    module.Parent = game.ServerStorage
-    local ok, result = pcall(require, module)
-    module:Destroy()
-    assert(ok, result)
-    print(name, result)
-end
-```
+The baseline compares returned paths with an independent exhaustive shortest-path search on 100 small maps. The added assertions check immutable snapshots, sliced costs, charged pops, expired deadlines, all 15 queued agents receiving work, generation cancellation, route compatibility and an actual open/closed passage comparison
 
-Expected output for the Edit-mode suites: `coretests 880` and `behaviortests 29`. A failed assertion stops with its message. Rebuild and repaste after changing the production source; the runner clones modules so each invocation avoids require's cached result
+The command-line fixture uses a deterministic PRNG substitute and mock attribute adapters. It does not run Roblox physics, client delivery or controller startup
 
-## What runs
+## Studio fixtures
 
-- `core tests.luau`: grid boundaries, discovery revisions, route costs and shortcuts; compares A* with an independent exhaustive search on 100 seeded maps and checks returned routes
-- `world fixture.luau` and `behavior tests.luau`: isolated parts at (10000, 0, 10000), real overlap queries, moving debris, stale/duplicate collapse events, route changes, crossing evidence, recovery limits and stopped-controller cleanup
-- `build tests.py`: extracts functions from the current main script instead of keeping a second planner implementation. Exact-match substitutions fail if the expected adapter changes
+Import `tests/generated/core tests.luau` as a ModuleScript in ServerStorage of a blank baseplate and require a fresh clone in Edit mode. This version uses Roblox Random, so the assertion count depends on the generated maps and differs from the command-line substitute
 
-The behavior fixture replaces rig drawing, humanoid movement commands and client notifications with stubs, redirects world ownership checks to its folder, and uses the Default collision group. It removes startup and the scheduler. Its folder is destroyed after assertions, including assertion failure
-
-The two existing suites contain 909 assertions, not 909 independent scenarios. They do not test actual walking, multiplayer delivery, camera/HUD loading, replay scheduling or publication. The separate observed Studio run reached 15 arrivals, eight collapses and a 31-to-19 shortcut; watch those events in the demo to inspect the full integration
-
-Generated modules are local test artifacts, not submission scripts or game runtime files. Delete the two imported modules after testing
-
-## Constraint ownership tests
-
-The builder also creates `tests/generated/turning tests.luau`. Import that file as a ModuleScript named `turningtests` in ServerStorage. Start Play and select the **Server** Command Bar context before running:
+Import `tests/generated/turning tests.luau` as a ModuleScript named `turningtests`. Start Play and run the following in the Server Command Bar
 
 ```luau
 -- Connected Discord-GitHub
@@ -50,6 +25,14 @@ assert(ok, result)
 print("turningtests", result)
 ```
 
-Expected output: `turningtests 23`. The anchored-root denial intentionally emits one warning, then checks that no partial objects or borrowed setting survive. The fixture is removed after success or failure. These checks exercise real ownership APIs, attachment and constraint properties, goal directions, near-zero guards, repeated setup, missing owned objects, true/false restoration and cleanup after removal. They also check shared inherited methods and independent per-agent route storage. They run synchronously and do not establish the solver's response during a full walk
+The turning fixture has 23 assertions covering real network ownership, constraint settings, horizontal and near-zero goals, shared methods, separate route storage, repeated setup, missing owned objects, true/false restoration, ownership denial and model destruction. The anchored-root denial intentionally emits a warning. Its isolated fixture is removed after success or failure; remove imported test modules before saving or publishing
 
-Full movement, corners, recovery, replay and client replication require the separate game integration checks. Remove imported test modules before saving or publishing the place
+## Recorded integration evidence
+
+[Cycle evidence](evidence/cycle.json) records one complete run on copied version-49 assets: 15 arrivals, zero stopped rigs, eight ordered collapse lifetimes, 96 chunks, 144 fragments, 630 probe dots and a 31-to-19 shortcut, followed by replay startup
+
+[Multiplayer evidence](evidence/multiplayer.json) records two real clients seeing the rigs, upright turning, three probe colors, HUD and camera. Controller destruction during an active collapse and ancestry removal each left zero owned turning pairs, attachments, dots, debris, guardians or registry records and restored all 15 humanoids. A test-only setup variant checked mixed saved rotation values
+
+[Source equivalence](evidence/source%20equivalence.json) records five later comment corrections with identical executable text and compiled bytes. The final source SHA identifies the submitted version; runtime SHA fields identify the tested snapshot. These JSON records describe observed integration runs, not results automatically reproduced by the unit builder
+
+Full walking, phase effects, replay and guardian teardown require a separate isolated game test. The repository does not contain the authored place assets or automatically publish them

@@ -1,46 +1,48 @@
 # Connected Discord-GitHub
-"""Build Studio test modules from the current checked-out navigation source."""
+"""Extract current controller functions into local tests without executing startup."""
 from pathlib import Path
 
 tests = Path(__file__).resolve().parent
 source = (tests.parent / 'ServerScriptService/maze agent controller (server).luau').read_text(encoding='utf-8')
 output = tests / 'generated'
 output.mkdir(exist_ok=True)
+header = '-- Connected Discord-GitHub\n-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.\n'
 
-def before(text, marker):
-    assert text.count(marker) == 1, f'Expected one source boundary: {marker}'
-    return text.split(marker)[0]
+def section(start, end):
+    assert source.count(start) == source.count(end) == 1, f'Changed extraction boundary: {start} / {end}'
+    return source[source.index(start):source.index(end)]
 
-def replace(text, old, new, count=1):
-    assert text.count(old) == count, f'Adapter changed; review test substitution: {old}'
-    return text.replace(old, new)
+pure = section('type grid =', 'local players =')
+wrapper = '''
+local function findroute(map: grid, start: number, goal: number): ({number}, number)
+    local job = newsearch(map, start, goal)
+    while job.route == nil do stepsearch(job, 64) end
+    return job.route :: {number}, job.cost
+end
+'''
+baseline = (tests / 'core tests.luau').read_text(encoding='utf-8')
+(output / 'core tests.luau').write_text(header + pure + wrapper + baseline, encoding='utf-8')
 
-core = before(source, '-- runtime adapter')
-(output / 'core tests.luau').write_text(core + (tests / 'core tests.luau').read_text(encoding='utf-8'), encoding='utf-8')
+rng = '''
+local Random = {}
+function Random.new(seed)
+    local value = seed
+    return {NextNumber = function(self, low, high)
+        value = (value * 48271) % 2147483647
+        local unit = value / 2147483647
+        return if low then low + (high - low) * unit else unit
+    end}
+end
+'''
+dispatch = section('local function compatible(', 'local function collidable(')
+search = header + rng + pure + wrapper + '\nlocal baseline = (function()\n' + baseline + '\nend)()\n'
+search += (tests / 'search prelude.luau').read_text(encoding='utf-8') + '\nlocal goalcell = 900\n' + dispatch
+search += (tests / 'search tests.luau').read_text(encoding='utf-8')
+(output / 'search tests.luau').write_text(search, encoding='utf-8')
 
-behavior = before(source, 'local function seed(')
-for old, new, count in [
-    ('local replicatedstorage = game:GetService("ReplicatedStorage")', 'local notices = 0', 1),
-    ('local rigs = require(script.Parent:WaitForChild("mazerigs"))', 'local rigs = {clear = function() end, draw = function() end}', 1),
-    ('workspace:WaitForChild("Maze")', 'testworld:WaitForChild("Maze")', 1),
-    ('workspace:WaitForChild("MazeAgents")', 'testworld:WaitForChild("MazeAgents")', 1),
-    ('local knowledgeevent = replicatedstorage:WaitForChild("maze_knowledge_event") :: RemoteEvent', 'local knowledgeevent = {FireAllClients = function() notices += 1 end}', 1),
-    ('local worldevent = serverstorage:WaitForChild("maze_world_changed") :: BindableEvent', '', 1),
-    ('local initialrigs = rigs.start(maze, agents)', '', 1),
-    ('overlap.CollisionGroup = "MazeAgents"', 'overlap.CollisionGroup = "Default"', 1),
-    ('part:IsDescendantOf(workspace)', 'part:IsDescendantOf(testworld)', 1),
-    ('workspace:FindFirstChild("maze_collapse_debris")', 'testworld:FindFirstChild("maze_collapse_debris")', 2),
-]:
-    behavior = replace(behavior, old, new, count)
-
-fixture = (tests / 'world fixture.luau').read_text(encoding='utf-8')
-checks = (tests / 'behavior tests.luau').read_text(encoding='utf-8')
-(output / 'behavior tests.luau').write_text(fixture + behavior + checks, encoding='utf-8')
-print(f'Built core tests and behavior tests in {output}')
-
-turning = source[source.index('local function setmode('):source.index('local function publish(')]
-turning += source[source.index('local function retire('):source.index('local function recordopenings(')]
-turning = 'local rigs = {clear = function() end}\n' + turning
-turnheader = "-- Connected Discord-GitHub\n-- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.\ntype agent = any\n"
-(output / 'turning tests.luau').write_text(turnheader + turning + (tests / 'turning tests.luau').read_text(encoding='utf-8'), encoding='utf-8')
-print(f'Built turning tests in {output}')
+attributes = section('local function attributes(', 'local function collisions(')
+turning = section('function agentmethods.stopturn(', 'local function cancel(')
+turning = header + 'local agentmethods = {}\nlocal agentmetatable = {__index = agentmethods}\n' + attributes + turning
+turning += (tests / 'turning tests.luau').read_text(encoding='utf-8')
+(output / 'turning tests.luau').write_text(turning, encoding='utf-8')
+print(f'Built core, search and turning tests in {output}')

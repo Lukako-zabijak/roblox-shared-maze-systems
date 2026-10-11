@@ -11,17 +11,17 @@ root.Parent = fixture -- a live root is required before server network ownership
 local humanoid = Instance.new("Humanoid") -- real properties check borrowed AutoRotate restoration without stubbing the engine
 humanoid.RequiresNeck = false -- the minimal isolated fixture deliberately has no authored avatar head or neck
 humanoid.Parent = fixture -- keep both physical components inside the one cleanup owner
-local authored = Instance.new("Attachment") -- cleanup must preserve an unrelated attachment of the same class
+local authored = Instance.new("Attachment") -- cleanup must keep an unrelated attachment of the same class
 authored.Name = "authoredattachment" -- its identity is separate from the controllers owned turning pair
-authored.Parent = root -- compare owned destruction with preservation on the same physical root
+authored.Parent = root -- owned cleanup must leave this unrelated frame on the same physical root
 local ok, result = pcall(function() -- destroy the isolated fixture even if an assertion fails
     local count = 0 -- assertions report their actual number without claiming distinct gameplay scenarios
     local function check(condition, message) -- failure messages identify the invariant rather than swallow a broken result
         assert(condition, message) -- stop the fixture at the first failed lifecycle or target contract
         count += 1 -- successful checks remain distinguishable from skipped cases
     end -- all test decisions share one assertion owner
-    local state = setmetatable({rig = {model = fixture, root = root, humanoid = humanoid}, route = {}}, agentmetatable) -- tests own one private controller state over real engine components
-    local peer = setmetatable({rig = state.rig, route = {}}, agentmetatable) -- a second state can share behavior without sharing its route storage
+    local state = setmetatable({model = fixture, root = root, humanoid = humanoid, route = {}}, agentmetatable) -- tests own one private controller state over real engine components
+    local peer = setmetatable({model = fixture, root = root, humanoid = humanoid, route = {}}, agentmetatable) -- a second state can share behavior without sharing its route storage
     check(getmetatable(state) == getmetatable(peer), "different lifecycle metatables") -- all agents must use the same method lookup owner
     check(rawget(state, "drive") == nil and state.drive == peer.drive, "methods copied or not shared") -- behavior lives once in the metatable rather than on each rig
     check(state.route ~= peer.route, "route storage shared between agents") -- method sharing cannot turn mutable route data into shared state
@@ -67,7 +67,7 @@ local ok, result = pcall(function() -- destroy the isolated fixture even if an a
     state:startturn() -- acquire with the alternate original setting
     state.alignment:Destroy() -- simulate losing the other half of the owned pair
     state:drive(position + Vector3.new(8, 0, 0)) -- losing a constraint must release its attachment and borrowed setting too
-    check(state.alignment == nil and state.attachment == nil and not humanoid.AutoRotate, "false restoration or constraint removal") -- the nil sentinel must preserve an original false value
+    check(state.alignment == nil and state.attachment == nil and not humanoid.AutoRotate, "false restoration or constraint removal") -- the nil sentinel must keep an original false value
     state:stopturn() -- cleanup is allowed after the fallback already removed every owned resource
     state:stopturn() -- repeated retirement or owner removal must stay harmless
     check(authored.Parent == root, "authored attachment destroyed") -- owned cleanup cannot remove unrelated rig assets

@@ -1,146 +1,60 @@
 # Navigation walkthrough
 
-Source: [main navigation script](../ServerScriptService/maze%20agent%20controller%20%28server%29.luau)
+Source: [main controller](../ServerScriptService/maze%20agent%20controller%20%28server%29.luau)
 
-Line references below match the current main script
+One source owns navigation, physical setup, probes, wall effects and replay. It keeps shared map observations separate from private rig routes and from the physical maze used to select valid starts
 
-## Overview
-
-> The agents share one map on the server, but that navigation map starts without the walls filled in
->
-> Each agent checks nearby cells, then A* plans using whatever the group has learned so far
->
-> A new blockage only asks for another plan when it affects the remaining route, while a reopened cell is checked for whether it could make the route cheaper
->
-> The collapse controller handles the physical wall, and the navigation controller decides when the opening is usable
-
-## Reading order
-
-| Main script lines | Read for | Main point to explain |
-| --- | --- | --- |
-| 15-54 | Grid and four-way neighbors | One numeric cell ID per tile; bounds prevent row wrapping |
-| 56-95 | Binary min-heap | Pop the lowest estimated total cost without sorting the whole frontier |
-| 97-108 | Discovery and revision | Repeating the same observation does not invalidate routes again |
-| 110-180 | A*, route reconstruction and costs | Plan from partial knowledge and compare the remaining route |
-| 184-290 | Roblox adapter | Convert between floor-relative cells and world positions |
-| 343-452 | Shared discoveries and sensing | Keep decision-making on the server; use body-space overlap checks |
-| 454-560 | Plan comparisons and demo evidence | A notification alone is not counted as a route change |
-| 562-697 | Movement and recovery | Plan from reached cell centers and bound stalled recovery |
-| 699-841 | Debris and collapse events | Check physical clearance, event order and current-run identity |
-| 843-983 | Cleanup and scheduler | Disconnect work on teardown and cap searches per update |
-
-## 1. How the map represents knowledge
-
-`map.cells` has three useful meanings: no entry means unknown, an entry with `blocked = false` means checked clear, and `blocked = true` means blocked. Every agent's plan reads the same table. They do not exchange separate copies of an entire map, and there is no cross-server memory. Each replay starts with fresh navigation knowledge.
-
-`discover` only increments the revision when a cell's known state changes. `publish` then checks which agents are affected and marks their plans dirty. The revision is an observation counter; it is not a separate pathfinding algorithm.
-
-`sense` learns the reached cell and its four neighbors. `readcell` queries a 2.6 × 4 × 2.6 stud body space, with the agents excluded and collision rules matched to their group. The visible raycast probes belong to `mazerigs.draw`; they illustrate direction and clearance, while the grid overlap query supplies navigation discoveries.
-
-The setup module does inspect the authored maze to choose reachable spawn positions. That setup information is not copied into the navigation map. Spawn selection and navigation knowledge have separate responsibilities.
-
-## 2. Why A* uses these costs
-
-The cost already travelled is stored in `costs`. The heap score adds Manhattan distance to the goal. A known clear cell costs 1; an unknown cell costs 1.15. Blocked cells are skipped.
-
-The extra 0.15 is a small preference for checked passages, not a measured probability of danger. Unknown cells must remain searchable, otherwise the agents cannot explore beyond their first observations.
-
-Manhattan distance is suitable for this four-way grid: each move changes one coordinate by one and costs at least 1. Ignoring obstacles and the unknown-cell surcharge gives a lower bound, so the estimate does not overstate that remaining grid cost. Adding diagonal moves would require changing both movement rules and the estimate.
-
-The binary heap orders the frontier by score. An improved route to a cell adds another entry rather than editing an older heap entry. When an older entry is popped, its stored cost is compared with the current best cost and stale entries are skipped. Parent pointers reconstruct the final route in reverse, then the route is reversed for movement.
-
-A* finds the cheapest route under the current knowledge and cost model. It cannot guarantee the shortest route through walls it has not discovered. The current grid also assumes this authored flat, eight-stud-tile maze; this is not a general navigation system for arbitrary terrain, stairs or jumping.
-
-## 3. What actually changes another agent's route
-
-The discovery is written to the shared map before any HUD notice. An agent is marked dirty when a new blockage appears on its remaining route. An opening can also trigger a check when its best-case distance might beat the remaining cost, or when an agent is waiting without a route.
-
-`couldshorten` is only an inexpensive rejection check. A promising opening still requires a real search. `plan` compares the new result with the old route's remaining cost and keeps the old valid route if the opening does not improve it. Pending openings are kept in a set so one discovery cannot overwrite another before planning consumes it.
-
-HUD notices are throttled separately from map changes. Suppressing a repeated visual message does not suppress the discovery or the agent updates.
-
-For the demonstration, `recordshared` checks that the route really changed, that the discovered blocked cell was on the old route, and that it is absent from the new one. It also checks the receiver is at least two grid edges away for the staged shared-change event. A cyan pulse by itself is not proof of rerouting.
-
-## 4. Why movement needs an anchor
-
-`anchor` is the last reached cell center. `target` is the cell currently being approached. Replanning from an arbitrary position halfway between centers could produce a diagonal cut across a wall corner, so recovery first returns toward the anchor.
-
-Movement commands go through `drive`, which calls `Humanoid:MoveTo`. The controller checks horizontal distance to the target rather than treating the command itself as arrival. It permits a 1.1-stud arrival tolerance for the rig.
-
-There are two stall checks: 1.5 seconds without enough progress, or 2.5 seconds overall on a movement attempt. Reissuing the command every 0.5 seconds does not reset those timers. Recovery attempts are limited, and a rig that cannot recover enters `stopped`. A shoved rig's candidate cell must fit its body query before it is accepted as a new anchor.
-
-| State | Meaning |
+| Functions | Reason for the boundary |
 | --- | --- |
-| queued | Waiting for the configured start delay |
-| planning | Ready for a search when the shared budget permits |
-| moving | Travelling toward the next planned cell |
-| recovering | Returning to a usable cell center |
-| waiting | No route was found; retry sensing after a delay |
-| observing | Temporary pause for the staged collapse demonstration |
-| arrived / stopped | Finished successfully / retired after failure or removal |
+| newgrid, coordinates, cellat, neighbors | Bounded numeric cells prevent row wrapping and keep the same four-way grid everywhere |
+| push, pop, newsearch, stepsearch | The heap serves both route frontiers and deadlines; each search can pause between charged pops |
+| worldpoint, cellfromworld, readcell | Floor-space conversion keeps commands and body queries on the same centers |
+| spawnpoints, setup, draw | Physical spawn reachability stays outside the learned map; probes illustrate clearance and peer messages |
+| publish, refresh, sense | Fresh checked evidence reaches the shared map before selective replanning or HUD notices |
+| compatible, searches, adopt | A finished result still needs current start, generation and observation compatibility |
+| witnesses, update | Sharing and shortcuts need actual route changes and physical traversal |
+| worldchanged, footprint, updatedebris | A disappeared wall is insufficient while debris or another part still blocks the opening |
+| selectwalls, warnwall, release, effects | Explicit phases and generation-owned deadlines retain warning, launch, landing and fade behavior |
+| pause, reset, stop | Movers stop before walls return; final teardown releases producers and owned resources |
 
-## 5. Why a destroyed wall is not immediately a passage
+## Knowledge and search
 
-The collapse script replaces the wall with physical debris. Removing the wall's original part does not establish that a humanoid can fit through the opening.
+An absent map record means unknown. Checked clear records cost 1 to enter, unknown cells cost 1.15 and blocked cells cannot be entered. Manhattan distance is a lower bound because each four-way move costs at least 1
 
-The controller receives `warning`, `falling` and `cleared` phases through a server-side BindableEvent. Each payload names its owning debris folder, wall ID, position, revision and fragment list. Folder identity distinguishes runs even if the replacement folder has the same name. Repeated or older phases cannot replace the latest phase for that wall.
+`discover` replaces changed records and advances the revision. A search shallow-copies the map table, so immutable records give it a fixed belief snapshot while other rigs keep sensing. Parent links reconstruct the cheapest route under that snapshot, not under undiscovered physical geometry
 
-The source cell stays gated during an active collapse. Gates are held by collapse ID, so clearing one hold does not remove another. Falling fragments also have a calculated footprint: their rotated half-extents, expanded by the body half-width, identify nearby grid centers worth rechecking. This footprint is a conservative query area, not an exact mesh collision solver.
+Improved cell prices add new heap entries. Stale entries are skipped after being charged to the work allowance. Dispatch rotates through eligible rigs, spends at most 1024 pops in slices of 128, and checks a three-millisecond elapsed deadline. That is a cooperative bound, not a hard frame-time guarantee
 
-On a clear event, both the previous and incoming fragment lists are checked for surviving collidable pieces. The affected body spaces are then queried again. This catches another obstruction behind the cleared debris. When debris moves, both its new cells and the cells it vacated are refreshed.
+Changed anchors or replay generations cancel obsolete jobs. Completed jobs check whether newly blocked cells touch their route or newly clear cells could beat its price. The Manhattan lower bound rejects irrelevant openings; promising ones still need an actual search. Accepted routes are repriced against current knowledge
 
-## 6. How the demo proves the shortcut
+A focus opening can request a second search on the same snapshot with that passage closed. This supplies a valid detour comparison when the previous route is no longer usable. Both jobs use the same scheduling allowance
 
-The first wall, three starting cells, start delays and runner pause are intentionally staged to make the interaction visible. They do not supply a waypoint route to A*. The group still discovers cells, searches and moves through the normal controller.
+## Movement and probes
 
-`recordopenings` requires a cheaper route through a newly opened cell. The special demo check also requires fewer grid moves, so merely reducing the 1.15 unknown-cell penalty cannot produce the 31-to-19 claim.
+The reached `anchor` differs from the commanded `target`. Replanning from reached centers avoids treating a halfway position as a safe diagonal shortcut. Arrival, progress and bounded recovery use actual root positions; refreshed MoveTo commands do not restart stall clocks
 
-`recordcrossing` runs when a target is reached. It records the entry side and only completes the example after the runner leaves the opened wall cell through a different neighboring cell. Touching the opening and turning back fails this check.
+One shared `__index` table supplies startturn, stopturn, drive and retire methods. Each rig keeps its own routes, evidence, clocks and owned instances. A finite mass-scaled AlignOrientation controls facing while Humanoid:MoveTo owns translation. Cleanup restores the exact saved AutoRotate boolean
 
-In the saved Studio run: Maze Dummy 04 supplied the discovery, Maze Dummy 02 changed route and traversed the shortcut, the opening cell was 1262, and the entry/exit cells were 1221 and 1303. The remaining route dropped from 31 grid moves to 19. These are results from that Studio run, not guaranteed wall-clock timings for every live server.
+Each rig owns seven probe directions with six dots per direction and three-ray clearance checks. Green marks a useful direction and cyan pulses mark received peer knowledge. These are presentation cues; body overlap queries supply navigation observations
 
-## 7. Server ownership, workload and cleanup
+The overlap box is 2.6 by 4.6 by 2.6 studs. Agents and the maze floor are excluded, and collision rules match the agent group so low collidable debris remains visible to navigation
 
-Search, shared map updates, movement and collapse handling run on the server. `maze_world_changed` is a BindableEvent in ServerStorage; `maze_knowledge_event` is a RemoteEvent used to display server messages on clients. The HUD is not an input source for navigation decisions.
+## Collapses and replay
 
-The controller updates at a configured interval of 0.16 seconds and permits at most two searches per update. This limits how many searches start together; a single search still runs synchronously. It does not provide a hard CPU-time budget or establish performance at hundreds of agents. The tested workload was 15 agents.
+Eight seeded selected walls retain boundary, goal, spawn and spacing exclusions. Three warning pulses lead to twelve chunks in three release layers and eighteen fragments per wall. Physical landing, fading and cleanup remain separate scheduled work
 
-`stop` first marks the controller inactive, then disconnects its stored connections, retires agent states and clears navigation tables. `mazerigs.watch` supplies the owner-removal callback from the module's lifetime. The module's watcher itself remains a module-owned connection; this is not a claim that every connection in the place disappears when the controller is removed.
+The server BindableEvent carries warning, falling and cleared phases with owner identity, wall ID, revision, position and copied part lists. Validation rejects wrong owners, stale phases, invalid geometry and false clearance while a collidable piece survives
 
-## 8. What reduced nesting means here
+Collapse IDs hold cell gates independently. Rotated debris bounds plus the body margin determine which cells need fresh queries, including cells the debris has vacated. An opening is only usable after those physical checks
 
-Nesting is how many control blocks a reader must stay inside at once. The main script uses early returns and `continue` for invalid or irrelevant cases, then keeps the useful path at a shallower indentation level. Arrival checks, recovery, route comparison and event validation have named functions with separate responsibilities.
+The demonstration requires a real shared route change and a cheaper route through the opening. Crossing is recorded from distinct entry and exit neighbors. Staged starts and a focus wall make these witnesses visible without supplying a waypoint route to the planner
 
-Examples to point to are `publish` at line 343, `maintainmove` at line 600, `update` at line 657 and `worldchanged` at line 766. Some nested loops are still appropriate, such as visiting x/z cells in a debris footprint. The support module also retains nested setup code. Nested iteration remains where the work needs it.
+Replay pauses movers before restoring captured wall templates, advances the generation, clears delayed work and learned observations, and rebuilds private rig resources. Ready viewers remain registered; the current JSON snapshot gives late viewers the current explanation
 
-## 9. Viewer readiness and repeatable demonstrations
+## Lifetime and clients
 
-The HUD subscribes to `demosnapshot` before reading its current value. That single JSON attribute carries a message, kind and increasing serial together, so an already-running server can show its latest demo state to a new viewer. Older or repeated serials are ignored. Ordinary notices continue through the RemoteEvent.
+The same source is cloned into `maze guardian`, a second runtime Script in ServerScriptService. Its private server shared record names the controller and its idempotent stop function. Polling from this independent context survives deferred controller destruction; after cleanup it drops the record and destroys itself. No Source read or runtime Source rewrite is involved
 
-After its labels and listeners are ready, the HUD sends `ready` through `maze_knowledge_event` until the server acknowledges that player. The server accepts only that exact action and records each connected player once. Repeated requests return before triggering any work. Departing players are removed from the ready set. A client cannot request a route, change the shared map or restart the demonstration through this handler.
+The existing HUD and freecam remain client scripts. The remote accepts only readiness from actual connected players; it does not accept routes or map edits. The guardian is server lifetime machinery, not client authority or an authored module dependency
 
-The first movement countdown begins when at least one viewer is ready. Once started, the current cycle continues normally for other viewers. A late client gets its camera from `demofocus`, which persists after the wall is destroyed. The camera is framed once, so later cycles do not override someone manually looking around.
-
-After the selected collapses and agent completion, or the 240-second completion deadline, the collapse controller asks the navigation controller to stop any remaining movers. Following a 15-second pause, it restores only the selected walls from their original templates and replaces the debris folder. The server sends a reset message carrying that new folder as the generation token. The navigation controller clears routes, gates, blockers and learned cells, resets the rig setup and starts the next cycle with ready viewers already registered.
-
-Reset messages from another folder and duplicates for the same folder are ignored. Fragment callbacks remember their original folder, so the previous cycle cannot announce clearance for the replacement cycle. Old demo timestamps are cleared before seeding the new agents, preventing an earlier clearance time from releasing the new runner too soon.
-
-The acknowledgement and snapshot contain presentation state, not evidence of applicant identity or authorship.
-
-## 10. Turning ownership
-
-The main controller creates one `Attachment` and one `AlignOrientation` for each eligible server-owned rig. `OneAttachment` mode uses a goal frame, and finite torque, angular speed and response keep the solver from requesting rigid instant alignment. Torque is initially scaled by assembly mass and clamped; the recorded Play run is the evidence for these settings, not a claim that they fit every rig.
-
-The rig helper originally enables `Humanoid.AutoRotate`. The controller saves that value and temporarily disables it while the constraint owns facing. `drive` derives a horizontal waypoint direction, guards near-zero vectors before calling `Unit`, and updates the constraint goal without writing the root's `CFrame`. `MoveTo` continues to own translation.
-
-A nil target disables torque. Retirement destroys only the owned constraint and attachment and restores the exact original AutoRotate value, including false. Replay reaches the same cleanup through pause before reseeding. If either owned object disappears, the next command releases the surviving half and restores humanoid facing. Ineligible network ownership produces a warning and leaves no partial objects or borrowed setting.
-
-This implementation adds real constraint and attachment interaction to the submitted main file. Agent lifecycle behavior is shared through a metatable; no external library is introduced. Application acceptance remains a reviewer decision.
-
-## 11. Shared agent behavior
-
-Each seed creates a fresh data table and attaches the same `agentmetatable`. Its `__index` points to one private `agentmethods` table holding the actual startturn, stopturn, drive and retire functions. Normal method calls now use colon syntax so the agent is passed as the first argument to that shared function. No method function is copied onto each rig
-
-Routes, timers, evidence, original AutoRotate and owned instances remain ordinary fields on the individual data table. There is no `__newindex`, so writes do not alter the shared behavior table. Missing optional fields still resolve to nil. The constructor's local type cast documents the fixed interface supplied by the known private method table
-
-The object fixture checks equal metatables and inherited function references, absent own method fields, distinct route tables and mutation isolation. The existing navigation fixture uses this same metatable so it tests real command and retirement dispatch rather than a separate wrapper
+The observed full cycle and two-client tests are linked in [the test notes](../tests/readme.md). Those results cover copied assets from place version 49 and do not establish cloud publication, larger loads or arbitrary terrain support

@@ -2,42 +2,26 @@
 
 15 agents share discoveries, change routes and use shortcuts opened by collapsing walls
 
-[Main script](ServerScriptService/maze%20agent%20controller%20%28server%29.luau) · [Play the demo](https://www.roblox.com/games/113425488924507/PathfindPractice) · [Walkthrough](docs/navigation.md) · [Run the tests](tests/readme.md)
+[Main script](ServerScriptService/maze%20agent%20controller%20%28server%29.luau) · [Demo place](https://www.roblox.com/games/113425488924507/PathfindPractice) · [Walkthrough](docs/navigation.md) · [Tests](tests/readme.md)
 
-## Watch
+Join on desktop. After the HUD loads, watch the scout share a blockage, the nearby runner change route, and the marked wall open a usable shortcut once its debris clears. The full demonstration includes eight collapses and repeats after a 15-second pause
 
-Join on desktop. The first run waits for the HUD to load, then starts after five seconds
+Camera controls are WASD, E/Q for height, right mouse to look, middle mouse to pan, wheel to dolly, Shift/Ctrl for speed and F3 to toggle
 
-1. Maze Dummy 04 discovers a wall and Maze Dummy 02 changes route
-2. The marked wall collapses; its passage stays blocked while debris occupies it
-3. The runner finds a shorter route and crosses the opening
+The main source has **999 physical lines and 996 code lines**. It owns rig setup, probes, partial shared knowledge, heap A*, recovery, constraint turning, collapse physics and replay. Searches run in fair slices against fixed belief snapshots, with charged heap pops, an elapsed-time check and validation before adoption
 
-The full run includes 15 agents and eight collapses. After completion and a 15-second pause, the demonstration resets and repeats. Late viewers receive the current status
+It has no other authored server-script dependency. It clones the same source into a **second runtime Script**, `maze guardian`, so cleanup can outlive unexpected controller destruction. The guardian removes its private server record and itself after teardown
 
-Camera: WASD to move, E/Q for height, right mouse to look, middle mouse to pan, wheel to dolly, Shift/Ctrl for speed, F3 to toggle
-
-## Code
-
-The main example is one **983-line Luau script with 781 nonblank, noncomment code lines**. It combines A* with a binary heap, a partially known shared grid, selective replanning, bounded movement recovery, shared metatable lifecycle methods, owned constraint turning and collapse-event validation
-
-Routes are calculated at runtime. Starting positions and the first collapse are staged to make the interaction visible
-
-| File | Studio placement |
+| Source | Studio placement |
 | --- | --- |
 | [maze agent controller (server).luau](ServerScriptService/maze%20agent%20controller%20%28server%29.luau) | ServerScriptService.MazeAgentController |
-| [maze collapse controller (server).luau](ServerScriptService/maze%20collapse%20controller%20%28server%29.luau) | ServerScriptService.maze_collapse_controller |
-| [maze rigs.luau](ServerScriptService/maze%20rigs.luau) | ServerScriptService.mazerigs (ModuleScript) |
 | [maze knowledge controller (client).luau](StarterGui/MazeKnowledgeGui/maze%20knowledge%20controller%20%28client%29.luau) | StarterGui.maze_knowledge_gui.controller |
 | [freecam controller (client).luau](StarterPlayer/StarterPlayerScripts/freecam%20controller%20%28client%29.luau) | StarterPlayer.StarterPlayerScripts.freecam_controller |
 
-The scripts depend on the authored maze, rigs and existing HUD in the demo; cloning this repo alone does not recreate the place
+Use the main controller in place of the old controller, collapse script and rig module. Keep the authored `Workspace.Maze`, `MazeAgents`, floor, goal, focus wall and existing HUD. The RemoteEvent `maze_knowledge_event` belongs in ReplicatedStorage and BindableEvent `maze_world_changed` in ServerStorage. This repo contains source, not the full place assets
 
-## Checks and limits
+Included fixtures reproduce 960 baseline and 1,182 additional search assertions with a fixed command-line PRNG substitute. Recorded Studio tests on copied assets completed one full cycle with 15 arrivals, eight collapses and a **31-to-19** shortcut, then rebuilt probes and turning for replay. Two clients saw the HUD, camera and probe effects; destruction and removal released owned resources and restored saved rotation values
 
-[Included tests](tests/readme.md) reproduce **880 core assertions, 29 behavior assertions and 23 constraint/object-lifecycle assertions**, including an independent shortest-path comparison on 100 seeded maps. The instructions explain the fixture substitutions and exclusions
-
-A separate Studio run completed two cycles; the second recorded 15 arrivals, eight collapses and a shortcut from **31 remaining grid moves to 19**. This is recorded integration evidence, not a result produced by the unit fixtures
-
-Designed for this flat eight-stud grid and 15 agents. Two-client constraint/transform replication was checked in Studio; larger multiplayer loads, large crowds and mobile controls have not been validated
+The candidate was tested on copies of place version 49. A repository push does not update the published Roblox place. Full Roblox editor type analysis, large crowds and mobile controls have not been validated
 
 Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox

@@ -1,0 +1,16 @@
+{
+  "issuer": "Codex final comment accuracy and executable equivalence check",
+  "tested_at": "2026-10-11T21:40:45.238047+00:00",
+  "corrections": "Five contextual explanations for flood fill pause and template restoration corrected without changing code or physical line positions",
+  "tested_source_sha256": "5f011b5cd38babbbf20305a3b3439a6a07c72f9619746bea2a723b34dcc281de",
+  "final_source_sha256": "ec16a5fb3bb1cdfd156e0af1ab6d850c401e55b5ab42ee63c697ce15094768ae",
+  "executable_text_equal": true,
+  "compiled_bytecode_equal": true,
+  "bytecode_sha256": "ae219c61389d88545978afa5bcc32f7a144d58c7523c89d136af2e40c94d2f65",
+  "bytecode_bytes": 51200,
+  "runtime_evidence": [
+    "guardian multiplayer result.json",
+    "guardian cycle result.json"
+  ],
+  "limitations": "Engine tests used the saved source snapshot; final changes correct comments only and compiled bytes match"
+}
