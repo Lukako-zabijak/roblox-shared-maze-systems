@@ -15,7 +15,7 @@ One source owns navigation, physical setup, probes, wall effects and replay. It 
 | witnesses, update | Sharing and shortcuts need actual route changes and physical traversal |
 | worldchanged, footprint, updatedebris | A disappeared wall is insufficient while debris or another part still blocks the opening |
 | selectwalls, warnwall, release, effects | Explicit phases and generation-owned deadlines retain warning, launch, landing and fade behavior |
-| pause, reset, stop | Movers stop before walls return; final teardown releases producers and owned resources |
+| pause, reset, the main loop | Movers stop before walls return; live shutdown disconnects producers and releases owned resources |
 
 ## Knowledge and search
 
@@ -27,13 +27,15 @@ Improved cell prices add new heap entries. Stale entries are skipped after being
 
 Changed anchors or replay generations cancel obsolete jobs. Completed jobs check whether newly blocked cells touch their route or newly clear cells could beat its price. The Manhattan lower bound rejects irrelevant openings; promising ones still need an actual search. Accepted routes are repriced against current knowledge
 
+No goal mode explores the full connected component by paid cost. Spawn validation uses this same kernel on a private physical map without teaching the shared map
+
 A focus opening can request a second search on the same snapshot with that passage closed. This supplies a valid detour comparison when the previous route is no longer usable. Both jobs use the same scheduling allowance
 
 ## Movement and probes
 
 The reached `anchor` differs from the commanded `target`. Replanning from reached centers avoids treating a halfway position as a safe diagonal shortcut. Arrival, progress and bounded recovery use actual root positions; refreshed MoveTo commands do not restart stall clocks
 
-One shared `__index` table supplies startturn, stopturn, drive and retire methods. Each rig keeps its own routes, evidence, clocks and owned instances. A finite mass-scaled AlignOrientation controls facing while Humanoid:MoveTo owns translation. Cleanup restores the exact saved AutoRotate boolean
+One shared `__index` table supplies startturn, stopturn, drive and retire methods. Each rig keeps its own routes, evidence, clocks and owned instances. A finite mass-scaled AlignOrientation controls facing while Humanoid:MoveTo owns translation. The controller keeps the authored RootAttachment and leaves AutoRotate unchanged; solver and native movement-goal lifetimes follow the controller
 
 Each rig owns seven probe directions with six dots per direction and three-ray clearance checks. Green marks a useful direction and cyan pulses mark received peer knowledge. These are presentation cues; body overlap queries supply navigation observations
 
@@ -53,8 +55,10 @@ Replay pauses movers before restoring captured wall templates, advances the gene
 
 ## Lifetime and clients
 
-The same source is cloned into `maze guardian`, a second runtime Script in ServerScriptService. Its private server shared record names the controller and its idempotent stop function. Polling from this independent context survives deferred controller destruction; after cleanup it drops the record and destroys itself. No Source read or runtime Source rewrite is involved
+Exactly one server Script owns the system. It starts in ServerScriptService and moves under the authored Maze. Its constraints, native MoveTo target parts, probes and debris are children of that owner, so destruction removes them through engine ancestry rather than relying on deferred code from a destroyed Script
 
-The existing HUD and freecam remain client scripts. The remote accepts only readiness from actual connected players; it does not accept routes or map edits. The guardian is server lifetime machinery, not client authority or an authored module dependency
+The main loop rechecks its parent after each heartbeat wait. A live parent change ends the loop, retires movers, disconnects adapters and clears owned children. Unexpected destruction removes active resources and keeps cached inspection attributes as the last snapshot. A deliberately held detached Script retains its inactive children until that instance is destroyed
+
+The HUD and freecam stay in their existing client contexts. The remote accepts readiness from actual connected players and cannot accept routes or map edits
 
 The observed full cycle and two-client tests are linked in [the test notes](../tests/readme.md). Those results cover copied assets from place version 49 and do not establish cloud publication, larger loads or arbitrary terrain support

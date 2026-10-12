@@ -1,26 +1,22 @@
 -- Connected Discord-GitHub
 -- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
 --!strict
-local guard = shared[script] -- only the cloned watcher has a cleanup record under its own instance key
-if guard then -- this branch keeps the watcher out of maze setup and navigation
-	while guard.owner:IsDescendantOf(game) do task.wait(0.16) end -- polling runs in the surviving script so deferred owner removal cannot cancel it
-	guard.stop() -- the watcher calls the owners idempotent cleanup from its own live context
-	shared[script] = nil -- drop the closure and controller reference once their lifetime is over
-	return script:Destroy() -- the temporary watcher has no work or registry entry left to keep alive
-end -- the ordinary controller continues below without a second navigation owner
 type grid = {width: number, height: number, revision: number, cells: {[number]: {blocked: boolean}}} -- bounds and revisions travel with the observations they describe
 type priority = {score: number} -- both deadlines and path estimates only need a score for heap ordering
 type entry = {cell: number, cost: number, score: number} -- path entries keep paid cost separate from the goal bound
 type search = { -- a job owns its snapshot frontier and result until adoption or cancellation
-	map: grid, start: number, goal: number, revision: number, -- the snapshot start goal and revision identify what this job is allowed to solve
+	map: grid, start: number, goal: number?, revision: number, -- a real goal uses its lower bound while nil explores the entire reachable component
 	heap: {entry}, costs: {[number]: number}, parents: {[number]: number}, -- frontier prices and parent links belong to this job rather than to another rig
 	route: {number}?, cost: number, expansions: number, pops: number, contrast: search?, -- nil means unfinished and an empty route means the search finished without a path
 } -- the job shape keeps fixed beliefs separate from mutable work and finished results
+
 local function newgrid(width: number, height: number): grid -- start with no observations so spawning cant give the agents the answer
 	assert(width > 0 and height > 0, "grid dimensions must be positive") -- invalid dimensions would make neighbor encoding unsafe
 	return {width = width, height = height, revision = 0, cells = {}} -- fresh bounds and empty memory keep replay independent of earlier discoveries
 end -- this map has valid bounds but no borrowed observations
-local function coordinates(map: grid, cell: number): (number, number) return (cell - 1) % map.width, math.floor((cell - 1) / map.width) end -- row width gives both axes without keeping another copy of cell positions
+local function coordinates(map: grid, cell: number): (number, number) -- row width decodes one bounded id into its two grid axes
+	return (cell - 1) % map.width, math.floor((cell - 1) / map.width) -- the remainder stays within its row while division selects the row
+end -- both coordinates use the same cell origin as encoding
 local function cellat(map: grid, x: number, z: number): number? -- a checked id keeps edge neighbors from wrapping into another row
 	if x < 0 or z < 0 or x >= map.width or z >= map.height then return nil end -- off floor coordinates cannot become valid table keys
 	return z * map.width + x + 1 -- row stride makes each bounded center a unique one based id
@@ -39,13 +35,13 @@ local function neighbors(map: grid, cell: number): {number} -- only four axis mo
 	end -- the neighbor list is bounded before it leaves this helper
 	return result -- only checked neighbor ids leave this encoder
 end -- the returned list has no wrapped or off floor centers
+
 local function push<t>(heap: {t & priority}, item: t & priority) -- climb parent slots instead of sorting the whole frontier after each insertion
 	local index = #heap + 1 -- the new tail slot lets insertion climb without moving unrelated branches
 	while index > 1 do -- insertion only walks the ancestors whose order could change
 		local parent = math.floor(index / 2) -- binary heap parent slots are half the child index
 		if heap[parent].score <= item.score then break end -- an already cheaper parent is where the inserted item can stop climbing
-		heap[index] = heap[parent] -- move the parent down so the cheaper insertion can take its slot
-		index = parent -- the next comparison belongs to the next ancestor rather than the old slot
+		heap[index], index = heap[parent], parent -- the entry and its new hole move together along the parent branch
 	end -- the inserted item now fits above its children and below its first ordered parent
 	heap[index] = item -- this slot already fits between its parent and children
 end -- parent and child ordering is restored without sorting the whole frontier
@@ -53,13 +49,12 @@ local function pop<t>(heap: {t & priority}): t & priority -- take the cheapest s
 	local first = heap[1] -- save the root before repairing the remaining heap
 	local last = table.remove(heap) :: (t & priority) -- reuse the old tail to fill the root hole without shifting the array
 	if #heap == 0 then return first end -- removing the last entry leaves no root hole to repair
-	local index = 1 -- read the reached queue from its first cell before neighbors extend the flood fill
+	local index = 1 -- repair starts at the root hole left by the cheapest heap entry
 	while index * 2 <= #heap do -- only parents with a child need another heap repair comparison
 		local child = index * 2 -- the two children occupy consecutive slots below this parent
 		if child < #heap and heap[child + 1].score < heap[child].score then child += 1 end -- choose the cheaper sibling before deciding where the old tail belongs
 		if heap[child].score >= last.score then break end -- a dearer child cannot require the tail to move any farther down
-		heap[index] = heap[child] -- bring the cheaper child up while leaving its siblings ordered
-		index = child -- continue down the branch whose cheaper child just moved
+		heap[index], index = heap[child], child -- moving the smaller child also advances the hole that still needs repair
 	end -- the chosen tail slot satisfies both parent and child order
 	heap[index] = last -- the tail now fits below its parent and above its children
 	return first -- the caller gets the cheapest saved entry and checks whether its price is stale
@@ -79,30 +74,28 @@ local function retrace(parents: {[number]: number}, start: number, goal: number)
 	for index = #reversed, 1, -1 do table.insert(route, reversed[index]) end -- reverse only the collected chain so movement gets forward order
 	return route -- the route is forward ordered and begins at the reached start
 end -- forward travel now follows the parent chain that achieved the best goal price
-local function newsearch(map: grid, start: number, goal: number): search -- give each job its own frontier and a fixed view of observed cells
+local function newsearch(map: grid, start: number, goal: number?): search -- route jobs and spawn reachability share one frontier but keep separate belief snapshots
 	local snapshot = {width = map.width, height = map.height, revision = map.revision, cells = table.clone(map.cells)} -- records are replaced on discovery so a shallow copy safely keeps this belief revision
 	local job: search = { -- this frontier belongs to one reached start and one replay generation
 		map = snapshot, start = start, goal = goal, revision = map.revision, -- each job gets a fixed belief map while the shared map can keep learning
 		heap = {}, costs = {[start] = 0}, parents = {}, route = nil, cost = math.huge, expansions = 0, pops = 0, -- the empty frontier only knows the start price and no finite result yet
 	} -- the job shape keeps fixed beliefs separate from mutable work and finished results
-	push(job.heap, {cell = start, cost = 0, score = distance(map, start, goal)}) -- the reached start has no paid travel and begins with its goal bound
+	push(job.heap, {cell = start, cost = 0, score = if goal then distance(map, start, goal) else 0}) -- a zero bound makes no goal mode explore by paid cost without guessing a destination
 	return job -- the caller owns this unfinished frontier and can resume it later
 end -- this frontier can pause without losing its belief revision or previous work
 local function stepsearch(job: search, limit: number, deadline: number?): number -- unfinished heaps survive the slice so movement doesnt wait for a full search
 	local spent = 0 -- this allowance belongs to one resumed slice rather than the whole job
 	while spent < limit and job.route == nil do -- a finished or exhausted slice gives control back to movement and the other jobs
 		if deadline and os.clock() >= deadline then break end -- check elapsed time between pops rather than pretend the slice is a hard real time limit
-		if #job.heap == 0 then -- an exhausted frontier means this snapshot has no route left to try
-			job.route = {} -- an empty finished result is different from an unfinished nil result
+		if #job.heap == 0 then -- exhaustion settles either a failed goal route or the complete reachable component
+			job.route = {} -- an empty result marks completion while the reached prices remain available to no goal callers
 			break -- the goal or exhausted frontier settled this snapshot so no more work belongs to this slice
-		end -- the failed result is explicit and no more work can leave this empty frontier
+		end -- no more reachable cells can leave an exhausted frontier
 		local current = pop(job.heap) -- heap order picks the lowest estimated total cost next
-		spent += 1 -- every popped entry uses work even when it turns out stale
-		job.pops += 1 -- count stale pops too so reported work matches the real allowance
+		spent, job.pops = spent + 1, job.pops + 1 -- every removed entry charges both this slice and the whole job including stale entries
 		if current.cost ~= job.costs[current.cell] then continue end -- a cheaper saved arrival makes this older heap entry stale
-		if current.cell == job.goal then -- only the cheapest current goal entry settles the result
-			job.route = retrace(job.parents, job.start, job.goal) -- the lowest current goal price owns the parent chain we return
-			job.cost = current.cost -- keep the price that actually settled this goal
+		if job.goal and current.cell == job.goal then -- a destination settles only goal mode while reachability keeps exploring
+			job.route, job.cost = retrace(job.parents, job.start, job.goal), current.cost -- the completed geometry and its settled price become one result
 			break -- the goal or exhausted frontier settled this snapshot so no more work belongs to this slice
 		end -- only nongoal candidates reach neighbor pricing below
 		job.expansions += 1 -- only nonstale nongoal candidates reach neighbor expansion
@@ -111,9 +104,8 @@ local function stepsearch(job: search, limit: number, deadline: number?): number
 			if known and known.blocked then continue end -- confirmed wall evidence excludes this neighbor before pricing it
 			local cost = current.cost + (if known then 1 else 1.15) -- known clear steps cost one and unknown steps keep the existing small penalty
 			if cost >= (job.costs[cell] or math.huge) then continue end -- keep the saved parent when this arrival doesnt improve its price
-			job.costs[cell] = cost -- save the cheaper price before another entry for this cell can be popped
-			job.parents[cell] = current.cell -- this predecessor achieved the price we just accepted
-			push(job.heap, {cell = cell, cost = cost, score = cost + distance(job.map, cell, job.goal)}) -- paid cost and its goal bound stay together in each frontier entry
+			job.costs[cell], job.parents[cell] = cost, current.cell -- this better price and the parent that achieved it replace the old record together
+			push(job.heap, {cell = cell, cost = cost, score = cost + (if job.goal then distance(job.map, cell, job.goal) else 0)}) -- goal mode adds its admissible bound while reachability orders only the paid travel
 		end -- all usable local alternatives now have their best price and parent recorded
 	end -- the returned pop count covers everything consumed in this slice
 	return spent -- the scheduler charges actual popped work including stale entries
@@ -131,6 +123,7 @@ end -- completed travel did not enter this remaining cost
 local function couldshorten(map: grid, anchor: number, opened: number, goal: number, cost: number): boolean -- even the best path through this opening needs to beat the remaining price
 	return distance(map, anchor, opened) + distance(map, opened, goal) < cost - 0.0001 -- reject the opening when even its best possible axis route cannot save travel
 end -- this cheap bound filters work and still leaves real route comparison to search
+
 local players = game:GetService("Players") -- the engine player identity owns viewer readiness and departure
 local httpservice = game:GetService("HttpService") -- a serialized snapshot can reach late viewers without sharing mutable state
 local physicsservice = game:GetService("PhysicsService") -- collision groups belong to the server and are shared by sensing and movement
@@ -156,20 +149,32 @@ local scanangles = {-72, -48, -24, 0, 24, 48, 72} -- keep seven existing directi
 local wrongcolor = Color3.fromRGB(255, 62, 72) -- unselected directions keep the existing red cue
 local agentmethods = {} -- one method table avoids copying lifecycle functions into every rig
 local agentmetatable = {__index = agentmethods} -- missing method lookup uses shared behavior while ordinary writes stay private
-local function attributes(item: Instance, values: {[string]: any}) -- these inspection fields are copies and cant become movement authority
+
+local function attributes(item: Instance, values: {[string]: any}) -- these inspection values are snapshots and keep their last value after unexpected owner destruction
 	for name, value in values do item:SetAttribute(name, value) end -- publish copies through the existing attribute names instead of expose private tables
 end -- private mutable tables never leave through this inspection adapter
 local function object(class: string | Instance, parent: Instance, values: {[string]: any}): any -- set properties before parenting so observers see a configured instance
-	local item = if typeof(class) == "string" then Instance.new(class) else class:Clone() -- each accepted candidate must pass the callers distance and spacing policy
+	local item = if typeof(class) == "string" then Instance.new(class) else class:Clone() -- a fresh class or childless geometry clone gets the same configured ownership boundary
 	if typeof(class) ~= "string" then item:ClearAllChildren() end -- cloned geometry keeps its authored style but not old children or scripts
 	for property, value in values do (item :: any)[property] = value end -- the requested instance class is the only boundary where property names are dynamic
 	item.Parent = parent -- parent only after configuration so listeners dont see half initialized parts
 	return item -- the configured object is returned after its ownership parent is assigned
 end -- the configured instance has one explicit resource parent
+local visual = object("Part", script, { -- probes warnings and goals share nonphysical defaults and the controller lifetime
+	Name = "maze visual template", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.1, 0.58, 0.58), -- ordered probe dots inherit this shape instead of repeating its construction
+	Anchored = true, CastShadow = false, Material = Enum.Material.Neon, Color = wrongcolor, Transparency = 1, -- hidden defaults prevent a new part from flashing before its caller places it
+	CanCollide = false, CanQuery = false, CanTouch = false, -- visual instances cannot become navigation evidence or physical obstacles
+}) -- each caller overrides only its different size pose color or name
 local function collisions(part: BasePart, enabled: boolean, query: boolean?) -- query and contact flags need an explicit choice even for invisible parts
 	part.CanCollide, part.CanQuery, part.CanTouch = enabled, if query == nil then enabled else query, false -- contact query and touch flags move together according to the callers physical role
 end -- physical contact and query visibility now match this parts role
-local function own(part: BasePart) pcall(function() part:SetNetworkOwner(nil) end) end -- an ineligible assembly shouldnt take the rest of setup down with it
+local function own(part: BasePart) -- all physical owners use the same checked server transfer
+	return pcall(function() -- a denied transfer can fall back without aborting an unrelated physical release
+		assert(part:CanSetNetworkOwnership()) -- an ineligible assembly cannot silently become client controlled
+		part:SetNetworkOwner(nil) -- nil gives the server responsibility for this eligible assembly
+		assert(part:GetNetworkOwner() == nil, "server ownership required") -- the returned success includes the actual owner rather than just the attempted call
+	end) -- callers can either inspect the failure or continue cosmetic debris work
+end -- this boundary returns success and the engine reason without yielding
 local function tween(item: Instance, duration: number, values: {[string]: any}, style: Enum.EasingStyle?, direction: Enum.EasingDirection?) -- warning and cleanup animations share timing setup without sharing mutable goals
 	local animation = tweenservice:Create(item, TweenInfo.new(duration, style or Enum.EasingStyle.Sine, direction or Enum.EasingDirection.Out), values) -- the engine tween owns interpolation while the scheduler owns its lifetime
 	animation:Play() -- the configured tween starts interpolation without blocking the scheduler
@@ -182,31 +187,30 @@ local function cellfromworld(position: Vector3): number? -- change frames before
 	local point = floor.CFrame:PointToObjectSpace(position) - origin -- subtract the center origin in floor space before rounding into cell coordinates
 	return cellat(map, math.round(point.X / 8), math.round(point.Z / 8)) -- round only after changing frames then let the bounds encoder reject off floor positions
 end -- an off floor position cannot supply a reached anchor
-local goalcell = cellfromworld(goal.Position) :: number -- the authored goal pad is checked before it becomes a destination id
-assert(goalcell, "goal is outside the grid") -- a missing goal id cannot become a valid search target
+local goalcell = assert(cellfromworld(goal.Position), "goal is outside the grid") -- the validated destination must be a bounded cell before any spawn or route work starts
 local demowall = maze:WaitForChild("Wall_32_31") :: BasePart -- the demonstration keeps the same focus wall through template restoration
 local democell = cellfromworld(demowall.Position) :: number -- shared change and crossing evidence refer to the same encoded opening
-local function planar(left: Vector3, right: Vector3): number return Vector2.new(left.X - right.X, left.Z - right.Z).Magnitude end -- root height is different from the floor so arrival uses the horizontal gap
-local function spaced(point: Vector3, choices: {Vector3}, spacing: number): boolean -- every earlier choice matters when checking space for another spawn or wall
-	for _, old in choices do -- a new choice needs enough distance from every earlier choice
-		if planar(point, if typeof(old) == "Vector3" then old else old.Position) < spacing then return false end -- reject a choice that would overlap the callers required spacing
-	end -- all previous choices passed the separation test
-	return true -- every earlier choice allowed the requested separation
-end -- no accepted earlier choice breaks the required separation
-local function choose(list, selected, spacing: number, wanted: number, threshold: number) -- the same greedy selection keeps each callers spacing and count policy explicit
-	for _, item in list do -- candidate order stays seeded while the callers policy decides acceptance
-		if #selected >= wanted then break end -- stop at the requested count instead of change later seeded choices
-		local point = if typeof(item) == "Vector3" then item else item.Position -- vectors and wall instances use their actual positions under the same selection policy
-		if table.find(selected, item) or planar(point, goal.Position) < threshold or not spaced(point, selected, spacing) then continue end -- duplicate choices and failed distance policies cannot enter the selected list
-		table.insert(selected, item) -- only choices that passed the callers policy join its ordered list
-	end -- selection cannot exceed the callers requested count
-end -- the caller gets a bounded ordered selection under its own policy
+local function planar(left: Vector3, right: Vector3): number -- standing height must not inflate arrival or spacing checks
+	return Vector2.new(left.X - right.X, left.Z - right.Z).Magnitude -- only the horizontal gap contributes to this flat maze distance
+end -- vertical rig height stays out of the comparison
+local function choose(list, selected, spacing: number, wanted: number, threshold: number) -- spawns and walls share selection while their distance policies stay explicit
+	for _, item in list do -- input order keeps the seeded shuffle and fallback passes meaningful
+		if #selected >= wanted then break end -- later entries cannot exceed the requested count
+		local point = if typeof(item) == "Vector3" then item else item.Position -- both supported inputs expose one physical position for policy checks
+		local allowed = not table.find(selected, item) and planar(point, goal.Position) >= threshold -- duplicates and the goal exclusion are checked before spacing
+		for _, old in selected do -- every earlier selection contributes its own separation requirement
+			allowed = allowed and planar(point, if typeof(old) == "Vector3" then old else old.Position) >= spacing -- one close earlier choice is enough to reject this candidate
+		end -- later comparisons cannot undo an earlier failed policy
+		if allowed then table.insert(selected, item) end -- only an accepted candidate extends the ordered selection
+	end -- the result keeps both the caller policy and the incoming seeded order
+end -- fallback passes can relax spacing without borrowing another callers choices
 local function shuffle(list: {any}, rng: Random) -- fixed seeds make the demonstration repeatable without giving anyone a route
 	for index = #list, 2, -1 do -- shuffle only the range that hasnt already been placed
 		local other = rng:NextInteger(1, index) -- each swap uses the same seeded stream and the remaining shuffled range
 		list[index], list[other] = list[other], list[index] -- swap rather than remove elements so the seeded candidate set keeps its size
 	end -- each completed tail position is outside the remaining shuffle range
 end -- the seeded set kept its contents while changing their order
+
 for _, group in {"MazeAgents", "MazeNavigationDecor", "maze_collapse_debris"} do -- register the owned collision policies before creating or querying their parts
 	pcall(function() physicsservice:RegisterCollisionGroup(group) end) -- a group that already exists should not stop startup
 	physicsservice:CollisionGroupSetCollidable(group, group, false) -- these owned groups must not create collisions within themselves
@@ -233,31 +237,29 @@ for _, part in maze:GetDescendants() do -- thin overlays need classification wit
 		part:SetAttribute("MazeNavigationDecor", true) -- leave the classification inspectable instead of rely only on a group name
 	end -- only floor level thin overlays received the decorative collision policy
 end -- authored solid walls were not reclassified as navigation decoration
+
 local function spawnpoints(): {Vector3} -- real wall geometry checks spawns but stays out of shared discovery memory
-	local blocked, reachable, queue = {}, {[goalcell] = true}, {goalcell} -- spawn flood fill sees geometry but never writes into the learned navigation map
+	local physical = newgrid(map.width, map.height) -- only this private map receives authored walls for validating spawn connectivity
 	for _, part in maze:GetChildren() do -- authored direct wall children supply geometry for spawn reachability only
 		if not part:IsA("BasePart") or string.find(part.Name, "Wall_", 1, true) ~= 1 then continue end -- the wall naming contract selects solid grid geometry without counting markers
 		local cell = cellfromworld(part.Position) -- the common floor encoder keeps geometry and reachability on matching cells
-		if cell then blocked[cell] = true end -- only geometry inside the common grid can mark a physical spawn cell blocked
+		if cell then discover(physical, cell, true) end -- physical wall evidence stays out of the shared observations that agents learn themselves
 	end -- physical spawn walls were collected without updating the belief map
-	local index = 1 -- read the reached queue from its first cell before neighbors extend the flood fill
-	while index <= #queue do -- flood fill walks only the component that can reach the goal
-		for _, cell in neighbors(map, queue[index]) do -- spawn validation uses the same bounded adjacency without teaching the navigation map
-			if blocked[cell] or reachable[cell] then continue end -- walls and previously queued cells cannot expand this reachability frontier twice
-			reachable[cell] = true -- mark before enqueueing so flood fill cannot queue the same center twice
-			table.insert(queue, cell) -- only newly reached cells enter the physical spawn search
-		end -- only unvisited reachable candidates extended this flood fill
-		index += 1 -- advance the processed queue prefix while leaving new reachable cells at the tail
-	end -- the goal component has been explored without duplicate queue entries
+	local flood = newsearch(physical, goalcell, nil) -- no goal mode settles every reachable cell using the same bounded neighbor and heap rules
+	while flood.route == nil do stepsearch(flood, 1024) end -- the exhausted frontier gives the complete connected component before seeded spawn choices begin
 	local points = {} -- a reachable tile supplies a standing height without sharing its geometry with the planner
 	for index = 0, map.width * map.height - 1 do -- this order keeps the existing x first spawn enumeration and seeded shuffle behavior
-		local cell = index % map.height * map.width + math.floor(index / map.height) + 1 -- the common floor encoder keeps geometry and reachability on matching cells
+		local cell = index % map.height * map.width + math.floor(index / map.height) + 1 -- column first enumeration matches the original spawn ordering so the same seeded shuffle gets the same candidates
 		local point = worldpoint(cell) + Vector3.new(0, 3, 0) -- a reachable tile supplies a standing height without sharing its geometry with the planner
-		if reachable[cell] and planar(point, goal.Position) >= 24 then table.insert(points, point) end -- ordinary starts need a reachable center and the existing gap from the goal
+		if flood.costs[cell] ~= nil and planar(point, goal.Position) >= 24 then table.insert(points, point) end -- a finite reached price proves connectivity and the existing goal gap still excludes close starts
 	end -- ordinary spawn candidates keep their original deterministic enumeration order
 	return points -- spawn geometry is returned without writing any agent discoveries
 end -- spawn reachability stayed separate from agent belief memory
+
 local function setup() -- fresh private state keeps replay from borrowing an old route or search
+	local old = script:FindFirstChild("maze probes") -- replay replaces this controller owned visual tree without touching rig attachments
+	if old then old:Destroy() end -- old probes cannot stay alongside their replacement generation
+	local probes = object("Folder", script, {Name = "maze probes"}) -- deleting the controller also deletes every probe without a callback
 	spawnrandom = Random.new(41317) -- fresh replays restart spawn choices without restarting the collapse stream
 	local models, selected, points, maximum = {}, {}, spawnpoints(), 0 -- a stable name order keeps staged roles and seeded spawn choices repeatable
 	for _, model in agents:GetChildren() do if model:IsA("Model") then table.insert(models, model) end end -- only authored models can become rigs or staged roles
@@ -303,24 +305,18 @@ local function setup() -- fresh private state keeps replay from borrowing an old
 			if not part.Anchored then own(part) end -- only dynamic assemblies can accept network ownership
 		end -- the navigation cylinder is the only body part that still owns contact
 		humanoid.WalkSpeed = 13 -- keep the current walking pace rather than speed up the demonstration
-		humanoid.AutoRotate = true -- ordinary humanoid facing stays the fallback until owned turning is ready
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, false) -- climbing a wall would skip the flat grid movement contract
 		local rays = RaycastParams.new() -- probe queries use the same agent collision policy as body sensing
 		rays.FilterDescendantsInstances = {agents} -- a rig must not read its own probes or another agents limbs as walls
 		rays.RespectCanCollide = true -- the probe should report physical clearance rather than visual decoration
 		rays.CollisionGroup = "MazeAgents" -- side rays and the body box use the same agent collision policy
-		local folder = object("Folder", model, {Name = "PathScanMarkers"}) -- these markers belong to this rig and can leave together on retirement
+		local folder = object("Folder", probes, {Name = model.Name}) -- each rig keeps its own probe tree under the controller lifetime
 		local markers = {} -- each direction keeps its own six dots for drawing and cleanup
 		for direction = 1, 7 do -- keep all seven named directions rather than pool their marker state
 			local line = {} -- each direction owns a separate six dot line instead of reuse another direction
 			local group = object("Folder", folder, {Name = string.format("Direction_%02d", direction)}) -- direction folders keep the existing probe paths available to observers
 			for dot = 1, 6 do -- each direction retains its existing six ordered dots
-				local marker = object("Part", group, { -- this visual part must never turn into a sensed obstruction
-					Name = string.format("Dot_%02d", dot), Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.1, 0.58, 0.58), -- each dot keeps the existing path name and cylinder shape for probe observers
-					Anchored = true, CastShadow = false, Material = Enum.Material.Neon, Color = wrongcolor, Transparency = 1, -- visual parts stay fixed nonshadowing and use the existing neon cues
-				}) -- this owned visual part is configured before drawing can reach it
-				collisions(marker, false) -- visual warnings and probes must stay out of physical navigation queries
-				table.insert(line, marker) -- each owned dot remains reachable for drawing and final cleanup
+				table.insert(line, object(visual, group, {Name = string.format("Dot_%02d", dot)})) -- cloned defaults keep all six ordered dots nonphysical and independently owned
 			end -- the six dots keep separate positions pulse delays and cleanup references
 			table.insert(markers, line) -- directions keep separate dot lines instead of share mutable marker state
 		end -- each probe direction now has its own complete marker line
@@ -328,7 +324,7 @@ local function setup() -- fresh private state keeps replay from borrowing an old
 		local state = setmetatable({model = model, root = root, humanoid = humanoid, markers = markers, rays = rays, markerfolder = folder, -- private fields belong to this rig while the metatable supplies shared methods
 			mode = "queued", anchor = cell, target = cell, route = {}, cursor = 2, failures = 0, dirty = true, -- fresh movement fields start without a borrowed route or progress history
 			peerchanges = 0, shortcuts = 0, sharedat = -math.huge, openings = {}, reason = "initial plan", -- sharing shortcut counters and pending openings belong to this run only
-			nextplan = math.huge, started = 0, progress = 0, best = math.huge, nextcommand = 0, request = 0, -- viewer readiness chooses the initial deadline and no old clock can start this rig early
+			nextplan = math.huge, started = 0, progress = 0, best = math.huge, nextcommand = 0, -- viewer readiness chooses the initial deadline and no old clock can start this rig early
 		}, agentmetatable) -- method lookup is shared while this route clocks resources and pending evidence stay private
 		attributes(model, {SpawnCellX = base.X, SpawnCellZ = base.Z, -- setup keeps the existing public rig fields without giving them planning authority
 			SpawnGoalDistance = if start then (base - goal.Position).Magnitude else planar(base, goal.Position), -- staged centers use actual goal distance and ordinary spawn centers keep their planar measurement
@@ -336,15 +332,16 @@ local function setup() -- fresh private state keeps replay from borrowing an old
 			ReceivedKnowledgeMessages = 0, sharedroutechanges = 0, shortcutchanges = 0, currentcell = cell, targetcell = cell, -- keep existing inspection names while giving staged roles their original start delays
 			demorole = if index == 3 then "scout" elseif index <= 2 then "runner" else "background", startdelay = if index <= 3 then 5 else 23}) -- the scout and runners keep their existing roles while background rigs keep the later start
 		table.insert(states, state) -- the shared scheduler owns this rigs private state entry
+		state.goalpart = object(visual, script, {Name = "navgoal"}) -- a movement target has its own lifetime even if facing falls back
 		state:startturn() -- acquire facing after collider setup has produced the physical assembly
 	end -- each configured rig now belongs to the shared scheduler and its own resource lifetime
 end -- each accepted rig has new owned geometry probes and navigation state
+
 local function draw(state, now: number) -- probes show clearance and sharing while the grid still owns route choices
 	local forward = Vector3.new(state.root.CFrame.LookVector.X, 0, state.root.CFrame.LookVector.Z) -- a horizontal facing vector stops root height from tilting the probes
 	if forward.Magnitude < 0.01 then return end -- a near vertical facing vector cannot supply a horizontal probe basis
 	forward = forward.Unit -- a unit facing vector makes angle scoring independent of root scale
-	local flat = worldpoint(state.target) - state.root.Position -- turning and direction scoring need a usable horizontal vector
-	flat = Vector3.new(flat.X, 0, flat.Z) -- the route target contributes direction without including standing height
+	local flat = (worldpoint(state.target) - state.root.Position) * Vector3.new(1, 0, 1) -- project the current target gap onto this flat maze before choosing a facing direction
 	local desired = if flat.Magnitude > 0.01 then flat.Unit else forward -- the destination only selects a probe and doesnt replace the planned route
 	local best, score, directions, clearances = 1, -math.huge, {}, {} -- a direction must beat the previous score and still have body clearance
 	for index, angle in scanangles do -- each existing angle keeps its own clearance and desired direction score
@@ -374,44 +371,40 @@ local function draw(state, now: number) -- probes show clearance and sharing whi
 	end -- every owned line was drawn without changing the planned path
 	state.model:SetAttribute("CorrectProbe", best) -- this direction witness stays presentation data rather than a movement command
 end -- display changes did not command movement or change learned occupancy
+
 local function mode(state, value: string) -- keep the private lifecycle and its visible state in step
 	state.mode = value -- private lifecycle state changes with the visible inspection field below
 	attributes(state.model, {PathState = value, currentcell = state.anchor, targetcell = state.target}) -- private state reached center and command destination remain distinct visible witnesses
 end -- the private state and visible lifecycle label now agree
-function agentmethods.stopturn(state) -- only the owned pair leaves and the old humanoid rotation setting comes back
+function agentmethods.stopturn(state) -- only the acquired solver leaves while the authored attachment and rotation setting stay on the rig
 	if state.alignment then state.alignment:Destroy() end -- destroy only the constraint acquired by this turning owner
-	if state.attachment then state.attachment:Destroy() end -- the owned attachment leaves with its constraint
-	if state.autorotate ~= nil and state.humanoid.Parent then state.humanoid.AutoRotate = state.autorotate end -- nil means no borrowed setting and false is still a setting that needs restoration
-	state.alignment, state.attachment, state.autorotate = nil, nil, nil -- drop owned references after destruction so another start cannot reuse the old pair
-end -- the humanoid has its old facing setting and no competing owned pair
+	state.alignment, state.attachment = nil, nil -- the authored frame stays in the rig while this state drops its borrowed reference
+end -- the authored frame and rotation setting stay on the rig after its solver leaves
 function agentmethods.startturn(state) -- take server ownership before adding a second source of rotation
-	state:stopturn() -- remove the owned rotation pair before replacing it or ending its lifetime
-	local ok, problem = pcall(function() -- ownership denial keeps the humanoids normal facing available
-		local allowed, reason = state.root:CanSetNetworkOwnership() -- anchored or otherwise ineligible assemblies cant take server ownership
-		assert(allowed, reason) -- the engine decides whether this assembly can accept network ownership
-		state.root:SetNetworkOwner(nil) -- the server needs authority over the physical facing assembly
-		assert(state.root:GetNetworkOwner() == nil, "turning requires server ownership") -- a failed ownership transfer must leave the humanoid fallback active
-	end) -- translation is still with the humanoid and only facing gained an owner
+	state:stopturn() -- release the solver without mutating the authored frame or humanoid setting
+	local ok, problem = own(state.root) -- facing starts only after the common transfer proved server ownership
 	if not ok then return warn("turning unavailable for " .. state.model.Name .. " " .. tostring(problem)) end -- ownership denial keeps normal humanoid facing available and records its reason
-	state.autorotate = state.humanoid.AutoRotate -- keep the exact previous boolean including false for final restoration
-	state.attachment = object("Attachment", state.root, {Name = "navturnattachment"}) -- the new attachment belongs to this root and this turning lifetime
-	state.alignment = object("AlignOrientation", state.root, { -- this finite soft constraint owns facing without becoming a translation controller
+	state.attachment = state.root:FindFirstChild("RootAttachment") -- this authored frame stays on the rig through controller teardown
+	assert(state.attachment and state.attachment:IsA("Attachment"), "rig needs its authored RootAttachment") -- missing authored frames cannot create a hidden second physics owner
+	state.alignment = object("AlignOrientation", script, { -- the solver is active in the world but belongs to the controller for automatic destruction
 		Name = "navturnalignment", Mode = Enum.OrientationAlignmentMode.OneAttachment, AlignType = Enum.AlignType.AllAxes, -- one attachment and all axes keep this flat maze turning owner explicit
-		Attachment0 = state.attachment, CFrame = state.root.CFrame.Rotation, MaxTorque = math.clamp(state.root.AssemblyMass * 1800, 5000, 100000), -- the root attachment owns the goal and mass scaling keeps torque bounded
+		Attachment0 = state.attachment, CFrame = state.root.CFrame.Rotation * state.attachment.CFrame.Rotation, -- the authored frame offset turns an attachment goal into the intended root heading
+		MaxTorque = math.clamp(state.root.AssemblyMass * 1800, 5000, 100000), -- heavier assemblies gain torque while both extremes stay bounded
 		MaxAngularVelocity = math.rad(240), Responsiveness = 12, RigidityEnabled = false, ReactionTorqueEnabled = false, Enabled = false, -- finite angular speed and soft response avoid an unlimited rigid rotation owner
-	}) -- the root pair has finite soft facing settings before automatic rotation is disabled
-	state.humanoid.AutoRotate = false -- the owned constraint must not compete with automatic humanoid rotation
+	}) -- the owned solver stays soft and the authored humanoid rotation setting remains unchanged
 end -- translation is still with the humanoid and only facing gained an owner
 function agentmethods.drive(state, target: Vector3?) -- one command owner keeps route following and recovery from fighting each other
 	local alignment = state.alignment -- an owned constraint can receive a facing goal without changing the root pose
 	if alignment and (not alignment.Parent or not state.attachment or state.attachment.Parent ~= state.root) then state:stopturn() end -- a missing owned part must restore the humanoid fallback rather than keep partial turning
 	if state.alignment then -- only the still valid owned pair can receive a new goal
-		local delta = if target then target - state.root.Position else Vector3.zero -- the target gap is measured from this rig rather than from the world origin
-		local flat = Vector3.new(delta.X, 0, delta.Z) -- turning and direction scoring need a usable horizontal vector
+		local flat = ((target or state.root.Position) - state.root.Position) * Vector3.new(1, 0, 1) -- project the current target gap onto this flat maze before choosing a facing direction
 		state.alignment.Enabled = flat.Magnitude > 0.05 -- a stop or near zero gap cannot supply a valid facing direction
-		if state.alignment.Enabled then state.alignment.CFrame = CFrame.lookAt(Vector3.zero, flat.Unit) end -- normalization and look at need a nonzero horizontal direction
+		if state.alignment.Enabled then state.alignment.CFrame = CFrame.lookAt(Vector3.zero, flat.Unit) * state.attachment.CFrame.Rotation end -- the borrowed attachment offset must not turn the root away from the chosen heading
 	end -- the facing goal only reached a complete still owned pair
-	state.humanoid:MoveTo(target or state.root.Position) -- the humanoid owns translation while the constraint only owns facing
+	local moving = target and state.goalpart -- only a request with its owned native target can become travel
+	local destination = if moving then target :: Vector3 else state.root.Position -- ordinary stops still point at the current root rather than a stale route cell
+	if moving then moving.CFrame = CFrame.new(destination) end -- the part center and requested world destination agree before the engine receives them
+	state.humanoid:MoveTo(destination, moving or nil) -- one native command either follows the owned part or clears its earlier movement request
 end -- the same command owner handled either travel or cancellation
 local function cancel(state) -- old frontier storage must leave when its start or owner is no longer valid
 	if not state.job then return end -- repeated cancellation is harmless once no frontier is owned
@@ -423,7 +416,9 @@ function agentmethods.retire(state, value: string) -- a finished rig has no trav
 	if state.root.Parent and state.humanoid.Parent then state:drive(nil) end -- removed physical components cannot accept a final stop command
 	state.route = {} -- terminal state must not retain waypoints that another discovery could revive
 	cancel(state) -- the abandoned frontier cannot install another result later
-	state:stopturn() -- remove the owned rotation pair before replacing it or ending its lifetime
+	state:stopturn() -- release the solver without mutating the authored frame or humanoid setting
+	if state.goalpart then state.goalpart:Destroy() end -- normal retirement releases the native target after the stop command
+	state.goalpart = nil -- this state cannot reuse a deleted movement target
 	state.markerfolder:ClearAllChildren() -- all these direction folders and dots were created by this rig owner
 	table.clear(state.markers) -- no later drawing pass can keep references to the retired dots
 	attributes(state.model, {currentcell = state.anchor, ScannerActive = false, CommunicationState = "offline"}) -- the reached anchor stays visible while scanner and communication labels become inactive
@@ -436,6 +431,7 @@ local function message(phase: string, text: string, now: number) -- the cached s
 	attributes(agents, {demophase = phase, demomessage = text, -- the phase text and serialized serial form one current client snapshot
 		demosnapshot = httpservice:JSONEncode({message = text, kind = kinds[phase] or "shared", serial = noticerevision})}) -- serialize a current notice copy so a late viewer need not catch an earlier remote
 end -- the cached notice explains server evidence without granting client authority
+
 local function publish(cell: number, blocked: boolean, source: string, now: number) -- share changed evidence before deciding which rigs actually need another route
 	blocked = blocked or gates[cell] ~= nil -- an active collapse hold takes priority over a temporarily empty body query
 	local old = map.cells[cell] -- a confirmed old blockage is needed before this can count as a reopened cell
@@ -455,9 +451,8 @@ local function publish(cell: number, blocked: boolean, source: string, now: numb
 		state.reason = if external then "structural change" elseif state.model.Name == source then "local discovery" else "shared discovery" -- world changes local sensing and peer messages keep different planning causes
 		attributes(state.model, {LastKnowledgeSource = source, lastdiscoverycell = cell}) -- this pending reroute keeps the actual source and affected cell together
 		if external or source == state.model.Name then continue end -- a rig does not receive its own observation as a peer message
-		state.sharedat = now -- only a real peer message starts the cyan receipt pulse
+		state.sharedat, affected = now, affected + 1 -- this accepted peer update owns both the pulse time and its one notice recipient count
 		if blocked then state.peertrigger, state.peersource = cell, source end -- save the peers actual blocked cell until both old and new routes can be compared
-		affected += 1 -- count this peer only after its route was actually affected
 	end -- other rigs kept their private routes while relevant ones gained pending work
 	agents:SetAttribute("KnowledgeMessagesPublished", map.revision) -- the visible counter follows real changed occupancy rather than repeated scans
 	if affected == 0 or now < nextnotice or not agents:GetAttribute("democomplete") then return end -- notice pacing cannot turn irrelevant or staged evidence into a public route claim
@@ -485,6 +480,7 @@ local function beginmove(state, target: number, value: string, now: number) -- n
 	mode(state, value) -- the command or retirement phase updates both private state and its inspection label
 	state:drive(worldpoint(target)) -- commands use the same cell transform as sensing and arrival checks
 end -- later command refreshes must not restart these movement clocks
+
 local function witnesses(state, route: {number}, cost: number, first: number, oldcost: number, now: number, contrast: search?) -- route geometry and prices are needed before claiming a shared change or shortcut
 	local old = state.route -- peer rerouting still compares with the actually adopted path rather than the closed comparison path
 	local before = if contrast and oldcost == math.huge then contrast.route :: {number} else old -- a valid old route stays the baseline unless a closed passage comparison is needed
@@ -558,9 +554,7 @@ local function recover(state, now: number) -- go back to a checked center and ke
 end -- the next plan still needs a physically reached clear center
 local function update(state, now: number): boolean -- physical arrival and recovery run even when no search work is available
 	if state.mode == "arrived" or state.mode == "stopped" then return false end -- terminal movement states cannot offer another search slot
-	if not state.model:IsDescendantOf(agents) or state.humanoid.Health <= 0 or not state.root.Parent then -- a dead removed or incomplete rig must release its current ownership
-		return state:retire("stopped") -- the invalid physical rig leaves through the same owned cleanup as other retirement paths
-	end -- only a live complete rig reaches normal movement decisions
+	if not state.model:IsDescendantOf(agents) or state.humanoid.Health <= 0 or not state.root.Parent then return state:retire("stopped") end -- removed dead or incomplete rigs release their commands before another movement decision
 	if state.mode == "observing" and (agents:GetAttribute("democlearedat") or now >= state.nextplan) then -- accepted clearance normally ends the hold and its deadline prevents endless waiting
 		state.demohold, state.dirty = false, true -- clear only the presentation hold and request a fresh route comparison
 		mode(state, "planning") -- this reached rig can offer work to the fair search queue
@@ -601,8 +595,7 @@ local function update(state, now: number): boolean -- physical arrival and recov
 			elseif state.mode == "recovering" and now - state.started > 2.5 then -- a failed return needs a clear bounded alternative rather than endless refreshes
 				local cell = cellfromworld(state.root.Position) -- a failed anchor return can consider only the roots current bounded body center
 				if not cell or readcell(cell) or state.failures >= 4 then return state:retire("stopped") end -- an alternate anchor must be inside the grid clear for the body and within the retry cap
-				state.anchor = cell -- accept this alternative center only after grid and physical clearance checks
-				state.failures += 1 -- recovery cannot retry an impossible physical move forever
+				state.anchor, state.failures = cell, state.failures + 1 -- accepting a new recovery anchor also spends one of this rigs bounded retries
 				beginmove(state, cell, "recovering", now) -- the body checked alternative anchor gets its own bounded return command
 			elseif now >= state.nextcommand then -- command cadence does not restart useful progress or total travel clocks
 				state.nextcommand = now + 0.5 -- refresh the same command without restarting total or useful progress clocks
@@ -614,13 +607,14 @@ local function update(state, now: number): boolean -- physical arrival and recov
 	draw(state, now) -- clearance and peer pulses are presentation and dont pick the route
 	return state.mode == "planning" or (state.mode == "observing" and state.dirty) -- this boolean offers search work and is not arrival evidence
 end -- search eligibility was decided after physical lifecycle and progress checks
+
 local function compatible(job: search, closed: number?): boolean -- changed cells need a proof that this finished route is still a valid best choice
 	local price = routecost(map, job.route :: {number}, 1) -- compare against current prices instead of an outdated saved total
 	for cell, known in map.cells do -- changed observations need checking while identical immutable records can be skipped
 		if cell == closed or job.map.cells[cell] == known then continue end -- ignore only the intended comparison door or an observation record that has not changed
-		if known.blocked then -- a new blockage can invalidate this route but cannot make a cheaper alternative elsewhere
-			if table.find(job.route :: {number}, cell) then return false end -- a newly blocked chosen cell is enough to reject adoption
-		elseif couldshorten(map, job.start, cell, job.goal, price) then return false end -- a cheaper observed cell must be unable to beat this result even in the best case
+		local invalid = if known.blocked then table.find(job.route :: {number}, cell) ~= nil -- a new wall invalidates this result only if the chosen route actually uses its cell
+			else couldshorten(map, job.start, cell, job.goal :: number, price) -- only goal jobs reach adoption and a newly clear cell must not admit a cheaper path
+		if invalid then return false end -- unchanged or harmless observations leave this fixed result eligible
 	end -- all changed cells were harmless under the checked route and lower bound tests
 	return true -- every changed observation passed the route validity and best case improvement checks
 end -- changed evidence cannot invalidate this path or improve an alternative beyond its checked price
@@ -631,11 +625,8 @@ local function searches(now: number) -- rotate between pending jobs and charge e
 		visits += 1 -- even skipped rigs contribute to the finite dispatch scan limit
 		local state = states[searchcursor] -- private fields belong to this rig while the metatable supplies shared methods
 		if not state.eligible then continue end -- movement has already run and this rig currently has no planning work
-		local job = state.job -- this frontier belongs to one reached start and one replay generation
-		if job and (job.start ~= state.anchor or state.jobgeneration ~= generation) then -- changed starts or replay owners invalidate unfinished work immediately
-			cancel(state) -- this job failed an ownership or changed observation check and cannot install its result
-			job = nil -- a new frontier cannot borrow work from the cancelled start or owner
-		end -- any remaining frontier belongs to the current reached start and replay owner
+		if state.job and (state.job.start ~= state.anchor or state.jobgeneration ~= generation) then cancel(state) end -- stale starts and previous runs lose their frontier before any further work
+		local job = state.job -- this reference is now absent or belongs to the current reached anchor and run
 		if not job then -- construct only one frontier for this rigs current planning request
 			job = newsearch(map, state.anchor, goalcell) -- this new job starts from the currently reached center and current beliefs
 			state.job, state.jobgeneration, state.queuedat = job, generation, now -- the rig owns this frontier along with its replay token and queue time
@@ -648,8 +639,7 @@ local function searches(now: number) -- rotate between pending jobs and charge e
 		local spent = stepsearch(active, math.min(128, budget), deadline) -- stale entries count too so they cant bypass the work limit
 		budget -= spent -- comparison work and ordinary path work use the same node allowance
 		state.model:SetAttribute("searchslices", (state.model:GetAttribute("searchslices") or 0) + 1) -- partial progress stays visible even before a route finishes
-		if job.route and (not state.openings[democell] or (job.contrast and job.contrast.route)) -- both required results must finish before ownership checks can allow adoption
-			and job.start == state.anchor and state.jobgeneration == generation then -- the reached anchor and generation must still belong to the job that finished
+		if job.route and active.route then -- both the ordinary route and any closed passage comparison must have settled before adoption
 			if job.revision ~= map.revision and (not compatible(job) or (job.contrast and not compatible(job.contrast, democell))) then -- a changed map needs valid open and closed results rather than a stale installation
 				cancel(state) -- this job failed an ownership or changed observation check and cannot install its result
 				continue -- the cancelled stale result cannot fall through into adoption
@@ -661,15 +651,17 @@ local function searches(now: number) -- rotate between pending jobs and charge e
 	end -- no job exceeded the global work allowance or finite fair scan limit
 	agents:SetAttribute("searchwork", 1024 - budget) -- the global counter includes stale and closed comparison pops too
 end -- remaining jobs keep their work and cannot bypass the shared dispatch allowance
-local function collidable(part: BasePart): boolean return part:IsDescendantOf(world) and part.CanCollide end -- saved references only matter while the part still collides in this world
+local function collidable(part: BasePart): boolean -- a saved fragment reference is not proof of a live obstruction
+	return part:IsDescendantOf(world) and part.CanCollide -- only a part still in this copied world and still solid can hold clearance
+end -- old or nonphysical pieces cannot keep a passage blocked
 local function footprint(record): {[number]: boolean} -- project rotated bounds into floor space then check those candidate body boxes
 	local cells = {[record.cell] = true} -- the source cell stays included even after fragments move away from it
 	for _, part in record.parts do -- only the parts from this accepted wall phase contribute footprint candidates
 		if not collidable(part) then continue end -- removed and noncolliding fragments cannot keep cells under a debris refresh
 		local pose, size = floor.CFrame:ToObjectSpace(part.CFrame), part.Size / 2 -- the part basis is expressed in floor space before expanding its rotated x and z bounds
-		local right, up, look = pose.RightVector, pose.UpVector, pose.LookVector -- all three box axes contribute when a fragment rotates
-		local xradius = math.abs(right.X) * size.X + math.abs(up.X) * size.Y + math.abs(look.X) * size.Z + 1.3 -- absolute basis projections include the body half width beside a rotated fragment
-		local zradius = math.abs(right.Z) * size.X + math.abs(up.Z) * size.Y + math.abs(look.Z) * size.Z + 1.3 -- the other projected axis uses the same body margin and floor frame
+		local right, up, look = pose.RightVector, pose.UpVector, pose.LookVector -- each local box axis contributes to the projected floor bounds
+		local xradius = math.abs(right.X) * size.X + math.abs(up.X) * size.Y + math.abs(look.X) * size.Z + 1.3 -- scalar products keep the earlier precision and include the same horizontal body margin
+		local zradius = math.abs(right.Z) * size.X + math.abs(up.Z) * size.Y + math.abs(look.Z) * size.Z + 1.3 -- the other floor axis needs contributions from all three rotated box directions too
 		local point = pose.Position - origin -- the projected box center uses the same center origin as encoded grid cells
 		for z = math.max(0, math.ceil((point.Z - zradius) / 8)), math.min(map.height - 1, math.floor((point.Z + zradius) / 8)) do -- clamp projected rows to real centers within the floor bounds
 			for x = math.max(0, math.ceil((point.X - xradius) / 8)), math.min(map.width - 1, math.floor((point.X + xradius) / 8)) do -- check every body center touched by the expanded rotated x bound
@@ -686,7 +678,7 @@ local function setgate(cell: number, id: string, blocked: boolean) -- each wall 
 end -- empty gate sets no longer pretend to own a blocked cell
 local function anysolid(parts): boolean -- clearance needs every tracked collidable part to be gone or disabled
 	for _, part in parts do if collidable(part) then return true end end -- one live collidable part is enough to deny clearance
-	return false -- this path cannot offer valid work or clearance to its caller
+	return false -- every tracked piece failed the live solid test so none can keep this passage blocked
 end -- no tracked collidable part remained when this helper returned clear
 local function worldchanged(data) -- the current owner and ordered phase must agree before changing navigation
 	if typeof(data) ~= "table" or data.owner ~= debrisfolder or not running then return end -- phase messages need the current physical owner and a running controller
@@ -694,9 +686,7 @@ local function worldchanged(data) -- the current owner and ordered phase must ag
 	if typeof(data.phase) ~= "string" or not phases[data.phase] then return end -- unknown phase names cannot choose a revision or a display state
 	if typeof(data.id) ~= "string" or #data.id == 0 or #data.id > 128 or phases[data.phase] ~= data.revision then return end -- a bounded wall id and matching phase revision are needed before looking up history
 	if typeof(data.position) ~= "Vector3" or typeof(data.parts) ~= "table" or #data.parts > 64 then return end -- world inputs must have a usable position and a bounded list of parts
-	for _, value in {data.position.X, data.position.Y, data.position.Z} do -- all axes must be finite before they can enter frame or grid math
-		if value ~= value or math.abs(value) == math.huge then return end -- NaN and infinite coordinates cannot become a meaningful body query
-	end -- no nonfinite axis can reach frame or grid conversion
+	if not (data.position.Magnitude < math.huge) then return end -- a finite length rejects every invalid axis before its world position becomes a cell
 	local cell = cellfromworld(data.position) -- the phase position must identify a real grid cell before it can own a hold
 	local old = collapses[data.id] -- prior phase and cell identity reject reordered events for this wall
 	if not cell or (old and (data.revision <= old.revision or cell ~= old.cell)) then return end -- an id cannot move cells or replay an earlier phase within this generation
@@ -704,8 +694,9 @@ local function worldchanged(data) -- the current owner and ordered phase must ag
 		if typeof(part) ~= "Instance" or not part:IsA("BasePart") or (part.Parent and not part:IsDescendantOf(debrisfolder)) then return end -- only physical parts from this debris owner can support its phase
 	end -- the accepted payload contains only physical references owned by this folder
 	if data.phase == "cleared" and (anysolid(if old then old.parts else {}) or anysolid(data.parts)) then return end -- both previous and reported parts must have stopped colliding before a gate opens
-	local record = {cell = cell, phase = data.phase, revision = data.revision, parts = table.clone(data.parts)} -- each wall keeps its own current parts and previous footprint
-	local cells = footprint(record) -- the phase position must identify a real grid cell before it can own a hold
+	local record = {cell = cell, phase = data.phase, revision = data.revision, parts = table.clone(data.parts), -- one ordered occupancy record also owns clearance tracking for these pieces
+		id = data.id, position = data.position} -- the accepted identity and origin stay available for the later physical clearance event
+	local cells = footprint(record) -- old and new projected regions choose the body queries needed before this phase changes occupancy
 	if old then for oldcell in old.footprint do cells[oldcell] = true end end -- vacated footprint cells need another query as well as newly touched ones
 	record.footprint = if data.phase == "cleared" then {} else cells -- keep the new affected region only while this record still owns falling parts
 	if data.phase == "cleared" then table.clear(record.parts) end -- finished records should not retain dead fragment references
@@ -713,18 +704,26 @@ local function worldchanged(data) -- the current owner and ordered phase must ag
 	setgate(cell, data.id, data.phase ~= "cleared") -- warning and falling hold the source cell while accepted clearance releases only this id
 	refresh(cells, "structural change", os.clock()) -- accepted phase geometry still needs physical rechecks before reopening any candidate
 	attributes(agents, {lastcollapsephase = data.phase, lastcollapsecell = cell}) -- publish this checked demo state through the existing client contract
-	if cell == democell then -- focus phase evidence feeds the existing narrated demonstration
-		agents:SetAttribute("demo" .. data.phase .. "at", os.clock()) -- warning falling and clearance get distinct evidence times
-		local text = {warning = "the runner pauses nearby - watch the orange wall", -- these captions follow a checked phase and never authorize movement
-			falling = "the wall collapsed - waiting for all debris to clear", -- falling and clearance captions describe different physical permission states
-			cleared = "debris is clear - agents can now compare routes through the opening"} -- the caption follows clearance rather than claiming that all part references vanished
-		message(data.phase, text[data.phase], os.clock()) -- the explanation follows the already validated phase
-	else -- ordinary walls still publish a checked phase notice without changing the focus narration
-		local text = {warning = "is becoming unstable", falling = "collapsed - watching the debris", cleared = "debris cleared - checking the opening"} -- these captions follow a checked phase and never authorize movement
-		local kinds = {warning = "collapse_warning", falling = "collapse", cleared = "shared"} -- notice colors describe the accepted state rather than decide it
-		knowledgeevent:FireAllClients({message = string.lower(data.id) .. " " .. text[data.phase], kind = kinds[data.phase], version = map.revision}) -- clients receive explanations while the server keeps navigation decisions
-	end -- focus narration and ordinary notices followed the same checked navigation phase
-end -- only checked ordered phase evidence changed the maps physical permission state
+	local notices = { -- each phase keeps its focus explanation background wording and existing client kind together
+		warning = {"the runner pauses nearby - watch the orange wall", "is becoming unstable", "collapse_warning"}, -- the warning describes the stable wall before any physical release
+		falling = {"the wall collapsed - waiting for all debris to clear", "collapsed - watching the debris", "collapse"}, -- falling never promises that the passage is already usable
+		cleared = {"debris is clear - agents can now compare routes through the opening", "debris cleared - checking the opening", "shared"}, -- physical clearance precedes both notices and route comparisons
+	} -- presentation words cannot choose the validated phase or occupancy
+	local notice = notices[data.phase] -- validation above guarantees one of the three presentation records
+	if cell == democell then -- the staged doorway also owns the cached explanation and timestamp
+		agents:SetAttribute("demo" .. data.phase .. "at", os.clock()) -- this timestamp follows the accepted phase rather than a scheduled guess
+		message(data.phase, notice[1], os.clock()) -- late viewers can read the focus explanation from its current snapshot
+	else -- other walls still send their existing live notices without replacing the focus snapshot
+		knowledgeevent:FireAllClients({message = string.lower(data.id) .. " " .. notice[2], kind = notice[3], version = map.revision}) -- the checked wall id and revision accompany this background phase
+	end -- focus and background notices follow the same ordered validation
+end -- only a current owner and valid phase can change navigation or its explanation
+
+local function announce(wall, phase: string, revision: number) -- copy the part list so the next release cant change an earlier phase message
+	wall.clearing = phase == "cleared" -- one pending clearance announcement is enough while its deferred validator catches up
+	worldevent:Fire({owner = debrisfolder, id = wall.id, position = wall.position, -- the phase list is copied so later release work cant rewrite this message
+		phase = phase, revision = revision, parts = table.clone(wall.parts)}) -- the copied part list and revision describe this completed release stage
+end -- later release layers cannot mutate the part list already sent
+
 local function updatedebris(now: number) -- old and new footprints both need checks when fragments move
 	local cells = {} -- all moving walls contribute before one deduplicated refresh pass
 	for _, record in collapses do -- only current falling records can move their tracked footprint
@@ -741,13 +740,12 @@ local function updatedebris(now: number) -- old and new footprints both need che
 		if now - obstruction.checked >= 1 and not static then refresh({[cell] = true}, "debris cleared", now) end -- age limits repeat work while static authored walls keep their stable evidence
 	end -- cached dynamic blockers were rechecked without repeatedly querying static walls
 end -- occupied and vacated regions both received current physical checks
-local timers, chunks, falling, templates, selected, candidatecount = {}, {}, {}, {}, {}, 0 -- replay keeps selection counts while effect and template resources have separate lifetimes
+
+local timers, chunks, templates, selected, candidatecount = {}, {}, {}, {}, 0 -- replay keeps selection counts while effect and template resources have separate lifetimes
 local cycledeadline, replayat, collapseindex = 0, nil, 0 -- the whole run has a deadline even if one rig never reaches a terminal state
-local function schedule(delay: number, callback: () -> ()) push(timers, {score = os.clock() + delay, callback = callback, generation = generation}) end -- the generation travels with the deadline so replay can reject an old action
-local function announce(wall, phase: string, revision: number) -- copy the part list so the next release cant change an earlier phase message
-	worldevent:Fire({owner = debrisfolder, id = wall.id, position = wall.position, -- the phase list is copied so later release work cant rewrite this message
-		phase = phase, revision = revision, parts = table.clone(wall.parts)}) -- the copied part list and revision describe this completed release stage
-end -- later release layers cannot mutate the part list already sent
+local function schedule(delay: number, callback: () -> ()) -- the action deadline and replay ownership travel together
+	push(timers, {score = os.clock() + delay, callback = callback, generation = generation}) -- the same heap orders deadlines while the generation rejects obsolete work
+end -- a delayed action cannot borrow the lifetime of the next replay
 local function selectwalls() -- keep the focus wall and select the other interior walls with the same exclusions
 	local candidates = {} -- interior and exclusion checks happen before random spacing selection
 	for _, wall in maze:GetChildren() do -- selection only considers actual authored direct wall parts
@@ -767,6 +765,7 @@ local function selectwalls() -- keep the focus wall and select the other interio
 		table.insert(templates, wall:Clone()) -- these eight authored originals are the only walls replay may restore
 	end -- every captured template has its selected order and stable phase metadata
 end -- the focus and spaced choices now have owned replay templates
+
 local function debris(wall, layer: {BasePart}, number: number) -- physical chunks and little fragments keep their separate cleanup rules
 	for _, chunk in layer do -- each chunk takes ownership and release timing when its own layer falls
 		local offset = chunk.Position - wall.position -- release force is measured away from this wall rather than from the world origin
@@ -789,7 +788,7 @@ local function debris(wall, layer: {BasePart}, number: number) -- physical chunk
 	end -- all chunks in this layer own release landing and cleanup work
 	for index = 1, 6 do -- each released layer still creates its original six little fragments
 		local width, height = random:NextNumber(0.18, 0.55), random:NextNumber(0.15, 0.5) -- x and z share this width while height has its own draw
-		local offset = Vector3.new(random:NextNumber(-wall.size.X * 0.48, wall.size.X * 0.48), -- release force is measured away from this wall rather than from the world origin
+		local offset = Vector3.new(random:NextNumber(-wall.size.X * 0.48, wall.size.X * 0.48), -- these random local offsets keep small fragments inside the captured wall volume before world conversion
 			random:NextNumber(-wall.size.Y * 0.25, wall.size.Y * 0.48), random:NextNumber(-wall.size.Z * 0.48, wall.size.Z * 0.48)) -- offsets remain inside the authored wall volume on all three axes
 		local fragment = object("Part", debrisfolder, { -- small pieces keep the authored material and their shorter lifetime
 			Name = "falling_fragment", Size = Vector3.new(width, height, width), CFrame = wall.pose * CFrame.new(offset), -- fragment dimensions and offsets use the seeded draws rather than change the wall shape
@@ -830,7 +829,6 @@ local function release(wall) -- split the authored wall before its solid origina
 			announce(wall, "falling", 2) -- all three layers are released and the copied phase list now includes every created piece
 			wall.part:Destroy() -- all layers and phase evidence now belong to the replacement parts
 			attributes(debrisfolder, {LastCollapsedChunkCount = 12, CollapsedWalls = (debrisfolder:GetAttribute("CollapsedWalls") or 0) + 1}) -- twelve created chunks and one destroyed original justify this completed collapse count
-			table.insert(falling, wall) -- the released parts remain tracked until every collidable piece clears
 		end) -- the next layer or final phase now waits for its scheduled release boundary
 	end -- the next layer or final phase now waits for its scheduled release boundary
 	layer(1) -- the first layer starts the ordered release chain
@@ -840,44 +838,40 @@ local function warnwall(part: BasePart) -- three visible pulses come before the 
 		size = part.Size, color = part.Color, material = part.Material, parts = {}} -- capture wall geometry and style before the original is destroyed
 	part:SetAttribute("CollapseState", "warning") -- the warning label matches the still solid wall and visible pulse
 	announce(wall, "warning", 1) -- the phase only includes parts that this wall has already created
-	local highlight = object("Highlight", part, { -- the warning stays visible while the wall is still solid
+	local highlight = object("Highlight", debrisfolder, { -- the warning stays visible while the wall is still solid
 		Name = "collapse_warning", Adornee = part, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, -- the outline belongs to the still solid wall and stays visible through it
 		FillColor = Color3.fromRGB(255, 132, 44), FillTransparency = 0.78, -- fill color and transparency keep the existing orange warning pulse
 		OutlineColor = Color3.fromRGB(255, 205, 82), OutlineTransparency = 0.08, -- the brighter outline makes the warning readable before the wall disappears
 	}) -- the wall outline has its existing visible warning appearance
-	local marker = object("Part", debrisfolder, { -- this visual part must never turn into a sensed obstruction
+	local marker = object(visual, debrisfolder, { -- this visual part must never turn into a sensed obstruction
 		Name = "collapse_warning", Size = Vector3.new(part.Size.X * 1.18, 0.08, part.Size.Z * 1.18), -- the floor cue slightly exceeds the wall footprint so its edges remain visible
 		CFrame = CFrame.new(part.Position.X, floor.Position.Y + floor.Size.Y / 2 + 0.05, part.Position.Z), -- the warning sits above the top face rather than inside the floor
-		Anchored = true, CastShadow = false, Material = Enum.Material.Neon, Color = Color3.fromRGB(255, 151, 48), Transparency = 0.48, -- visual parts stay fixed nonshadowing and use the existing neon cues
+		Shape = Enum.PartType.Block, Color = Color3.fromRGB(255, 151, 48), Transparency = 0.48, -- the orange rectangular cue overrides the dot template without changing its nonphysical defaults
 	}) -- this owned visual part is configured before drawing can reach it
-	collisions(marker, false) -- visual warnings and probes must stay out of physical navigation queries
-	local function pulse(number: number) -- each bright and dim pair finishes before another pulse or release starts
-		if not part.Parent then -- a removed warning target releases its owned cues and phase hold
-			highlight:Destroy() -- the wall outline has finished its warning lifetime
-			marker:Destroy() -- the floor cue must not survive into the falling or cancelled warning phase
-			announce(wall, "cleared", 3) -- cancelled warning cues have left before their own clearance message is sent
-			return -- the missing warning target has already released its cues and hold
-		end -- only a surviving warning target reaches another pulse below
-		tween(highlight, 0.22, {FillTransparency = 0.38, OutlineTransparency = 0}) -- the orange wall outline and fill keep the existing pulse timing
-		tween(marker, 0.22, {Transparency = 0.12}) -- the floor warning follows the same bright or dim phase as the wall
-		schedule(0.22, function() -- brightening reaches its deadline before dimming starts
-			tween(highlight, 0.26, {FillTransparency = 0.82, OutlineTransparency = 0.32}, nil, Enum.EasingDirection.In) -- the orange wall outline and fill keep the existing pulse timing
-			tween(marker, 0.26, {Transparency = 0.62}, nil, Enum.EasingDirection.In) -- the floor warning follows the same bright or dim phase as the wall
-			schedule(0.26, function() -- the dim phase ends before another pulse or the collapse release
-				if number < 3 then return pulse(number + 1) end -- three complete bright and dim pairs come before the solid wall leaves
-				highlight:Destroy() -- the wall outline has finished its warning lifetime
-				marker:Destroy() -- the floor cue must not survive into the falling or cancelled warning phase
-				release(wall) -- all three pulse pairs have finished before physical layers begin
-			end) -- the dim deadline advanced the pulse count or started the physical release
-		end) -- the bright deadline scheduled dimming without blocking movement
-	end -- a warning pulse cannot release physical chunks before its bright and dim phases finish
-	pulse(1) -- start with a visible warning rather than release a solid wall immediately
+	local function pulse(stage: number) -- three bright and fading pairs keep their original relative deadlines
+		local bright = stage % 2 == 1 -- the odd stages start a pulse while even stages finish its fade
+		if stage == 7 or (bright and not part.Parent) then -- completion and a cancelled wall release the same warning owner
+			highlight:Destroy() -- this owner cannot leave an outline behind either exit
+			marker:Destroy() -- its footprint has the same lifetime as the outline
+			return if part.Parent then release(wall) else announce(wall, "cleared", 3) -- only a still solid original can become falling pieces
+		end -- an unfinished live warning keeps its next original interval
+		local duration = if bright then 0.22 else 0.26 -- the original bright and fading delays still drive each stage
+		local direction = if bright then Enum.EasingDirection.Out else Enum.EasingDirection.In -- each half keeps its original easing direction
+		tween(highlight, duration, {FillTransparency = if bright then 0.38 else 0.82, OutlineTransparency = if bright then 0 else 0.32}, nil, direction) -- highlight goals change together for this half pulse
+		tween(marker, duration, {Transparency = if bright then 0.12 else 0.62}, nil, direction) -- the footprint follows the same owned interval
+		schedule(duration, function() pulse(stage + 1) end) -- the next stage still passes through the generation checked deadline heap
+	end -- only one subsequent stage is queued at a time
+	pulse(1) -- the first bright interval begins immediately
 end -- the pulse chain owns both cues until cancellation or actual release
+
 local function effects(now: number) -- all delayed work is checked against the active replay owner
 	while #timers > 0 and timers[1].score <= now do -- only due work leaves the ordered deadline heap
 		local timer = pop(timers) -- a due time alone isnt enough and the replay generation still has to match
 		if running and timer.generation == generation then timer.callback() end -- a due callback still needs the same live replay generation
 	end -- the next remaining deadline is still in the future
+	for _, record in collapses do -- the validated phase record already owns both navigation holds and physical clearance
+		if record.phase == "falling" and not record.clearing and not anysolid(record.parts) then announce(record, "cleared", 3) end -- the ordered phase needs actual clearance and cannot be queued twice
+	end -- the shared phase owner replaces a second list of the same falling walls
 	for chunk, born in chunks do -- landing checks belong to the release time of each actual physical chunk
 		if not chunk.Parent or chunk.Anchored or now - born >= 4.5 then -- expired or anchored chunks no longer need active landing work
 			chunks[chunk] = nil -- dead anchored or expired landing records no longer need a frame check
@@ -887,34 +881,29 @@ local function effects(now: number) -- all delayed work is checked against the a
 		local extent = (math.abs(pose.RightVector.Y) * size.X + math.abs(pose.UpVector.Y) * size.Y + math.abs(pose.LookVector.Y) * size.Z) / 2 -- rotated basis vectors give the actual bottom of this falling box
 		local top = floor.Position.Y + floor.Size.Y / 2 -- landing uses the top face of the floor rather than its center
 		if now - born < 0.05 or chunk.Position.Y - extent > top + 0.18 or chunk.AssemblyLinearVelocity.Y > 1.5 then continue end -- the box must have fallen to the floor and slowed vertically before it is anchored
-		local yaw = CFrame.Angles(0, math.rad(random:NextNumber(0, 360)), 0) -- keep the seeded quarter turns for ordinary background starts
+		local yaw = CFrame.Angles(0, math.rad(random:NextNumber(0, 360)), 0) -- seeded landing yaw spreads the resting debris without changing its physical clearance checks
 		local rotation = if size.X >= size.Z then CFrame.Angles(0, 0, math.rad(90)) else CFrame.Angles(math.rad(90), 0, 0) -- the longer horizontal dimension becomes the resting height
 		chunk.CFrame = CFrame.new(chunk.Position.X, top + math.max(size.X, size.Z) / 2 + 0.04, chunk.Position.Z) * yaw * rotation -- put the resting long side above the actual floor top before anchoring
 		chunk.AssemblyLinearVelocity, chunk.AssemblyAngularVelocity = Vector3.zero, Vector3.zero -- landing stops both translation and spin before the part becomes static
 		chunk.Anchored = true -- the accepted resting pose must not continue tumbling through the floor
 		attributes(chunk, {LandedOnMazeFloor = true, LandingY = chunk.Position.Y}) -- these fields record a physical landing after the bottom extent check
 	end -- only active falling parts remain eligible for another landing check
-	for index = #falling, 1, -1 do -- backward removal keeps other active wall trackers at valid indexes
-		local wall = falling[index] -- this tracker keeps the complete actual part list until physical clearance
-		if not anysolid(wall.parts) then -- the last collidable fragment really has cleared before the phase is announced
-			announce(wall, "cleared", 3) -- every tracked collidable piece has actually cleared before this wall releases its gate
-			table.remove(falling, index) -- accepted clearance releases this tracker and leaves other falling walls alone
-		end -- this wall has announced actual clearance before its tracker leaves
-	end -- completed wall trackers left without shifting another unchecked record
 end -- due actions and physical landing checks kept their own generation and lifetime checks
+
 local demo = {phase = "waiting", due = 0, deadline = 0} -- the coordinator keeps phase deadlines separate from rig progress timers
 local function pause() -- stop remaining movers before any solid wall can return
 	for _, state in states do -- every unfinished rig must release travel and facing before walls can return
 		if state.mode ~= "arrived" and state.mode ~= "stopped" then state:retire("stopped") end -- completed arrivals stay completed while only remaining movers are stopped
 	end -- arrivals stay terminal while the remaining rigs have no travel command left
 end -- wall restoration can now happen without active travel commands
+
 local function reset() -- a new generation gets fresh map state rigs walls and delayed work
 	pause() -- old travel stops before restoring authored solid geometry and fresh rig state
 	generation += 1 -- all pending actions from the old replay become stale together
-	for _, list in {states, blockers, collapses, gates, map.cells, timers, chunks, falling} do table.clear(list) end -- old map jobs gates and effect trackers leave with the replay generation
+	for _, list in {states, blockers, collapses, gates, map.cells, timers, chunks} do table.clear(list) end -- old map jobs gates and effect trackers leave with the replay generation
 	map.revision, started, replayat, collapseindex = 0, false, nil, 0 -- a fresh replay owns fresh observation history and demonstration timing
 	if debrisfolder then debrisfolder:Destroy() end -- only this controllers physical debris owner is destroyed
-	debrisfolder = object("Folder", world, {Name = "maze_collapse_debris"}) -- this new folder is the physical owner for the next collapse generation
+	debrisfolder = object("Folder", script, {Name = "maze_collapse_debris"}) -- this new folder is the physical owner for the next collapse generation
 	selected = {} -- rebuild the selection from captured templates so replay uses the same walls
 	for _, template in templates do -- template order keeps the focus wall first during restoration
 		local old = maze:FindFirstChild(template.Name) -- a surviving copy of this selected wall must leave before its template is restored
@@ -929,15 +918,7 @@ local function reset() -- a new generation gets fresh map state rigs walls and d
 	demo = {phase = "waiting", due = 0, deadline = 0} -- new phase deadlines cannot inherit a completed countdown from the last run
 	message("waiting", "waiting for the viewer to finish loading", os.clock()) -- viewer readiness still gates the next demonstration rather than a fixed startup delay
 end -- new state cannot inherit old collision holds route jobs or phase deadlines
-local function stop() -- disconnect producers before clearing the resources they could otherwise revive
-	if not running then return end -- repeated stop or a stopped callback cannot revive this controller
-	running = false -- later callbacks must see the stopped owner before resources are released
-	pause() -- final teardown releases remaining travel and turning before dropping owned resources
-	for _, connection in connections do connection:Disconnect() end -- disconnect event producers before clearing the state they could still reach
-	for _, template in templates do template:Destroy() end -- captured wall copies are owned resources and leave on final teardown
-	if debrisfolder then debrisfolder:Destroy() end -- only this controllers physical debris owner is destroyed
-	for _, list in {timers, chunks, falling, states, map.cells, viewers, connections} do table.clear(list) end -- final teardown drops delayed actions private state and viewer membership together
-end -- old event producers and owned resources no longer keep this controller alive
+
 local function demonstration(now: number) -- advance from observed sharing and crossing rather than just a countdown
 	if not started then return end -- the coordinator does no countdown work before viewer readiness
 	if demo.phase == "sharing" and agents:GetAttribute("demoshared") then demo.phase, demo.due = "collapse", now + 3 end -- real shared reroute evidence opens the first warning countdown
@@ -964,12 +945,10 @@ local function demonstration(now: number) -- advance from observed sharing and c
 	end -- the replay deadline was created only after movers stopped
 	if replayat and now >= replayat then reset() end -- restoration belongs to its own due time rather than a movement update
 end -- the next phase still needs either its real witness or its bounded deadline
+
+script.Parent = maze -- world ancestry activates owned constraints while destruction removes their whole tree
 selectwalls() -- wall templates are captured once so replay changes only the chosen walls
 reset() -- old delayed work and movement owners leave before this new replay starts
-local guardian = script:Clone() -- the same source gives cleanup its own script lifetime without an authored module
-shared[guardian] = {owner = script, stop = stop} -- install the private owner record before parenting can start the clone
-guardian.Name = "maze guardian" -- an explicit runtime name makes the second instance easy to inspect
-guardian.Parent = game:GetService("ServerScriptService") -- the watcher stays outside the removable controller subtree
 table.insert(connections, knowledgeevent.OnServerEvent:Connect(function(player, action) -- only the existing ready request crosses this client boundary
 	if not running or action ~= "ready" or player.Parent ~= players then return end -- only the actual connected player can send the existing ready action
 	viewers[player] = true -- ready membership belongs to the actual engine sender
@@ -977,13 +956,16 @@ table.insert(connections, knowledgeevent.OnServerEvent:Connect(function(player, 
 end)) -- readiness has been recorded only for the actual current player
 table.insert(connections, players.PlayerRemoving:Connect(function(player) viewers[player] = nil end)) -- departed players cannot remain in the current viewer membership set
 table.insert(connections, worldevent.Event:Connect(worldchanged)) -- phase evidence enters one validated owner path instead of directly changing routes
-table.insert(connections, game:GetService("RunService").Heartbeat:Connect(function(dt) -- one heartbeat owns effect deadlines movement sampling and fair planning
-	if not running then return end -- repeated stop or a stopped callback cannot revive this controller
+
+local heartbeat = game:GetService("RunService").Heartbeat -- one engine tick paces physical effects and bounded movement work
+while script.Parent == maze do -- moving the controller out of its live owner stops this composition root
+	local dt = heartbeat:Wait() -- the running script owns this wait and destruction cancels its thread
+	if script.Parent ~= maze then break end -- the wait can outlive a live parent change so no old effects or commands may run after it
 	local now = os.clock() -- this pass uses one monotonic timestamp for its phase and movement checks
 	effects(now) -- due visual and cleanup work isnt held up by the navigation sampling interval
 	demonstration(now) -- phase and replay deadlines keep running independently of a search result
 	elapsed += dt -- sampling uses accumulated frame time rather than assume a fixed frame rate
-	if elapsed < 0.16 then return end -- movement sampling stays at the existing interval even if frames are faster
+	if elapsed < 0.16 then continue end -- effect deadlines still advance while movement waits for its sampling interval
 	elapsed = 0 -- one navigation pass consumes this interval without replaying missed frame work
 	if not started and next(viewers) then -- one real ready viewer starts the current cycle only once
 		started = true -- one ready viewer opens the start gate for this cycle
@@ -996,4 +978,8 @@ table.insert(connections, game:GetService("RunService").Heartbeat:Connect(functi
 	updatedebris(now) -- fresh physical evidence is ready before the scheduler considers finished routes
 	for _, state in states do state.eligible = started and update(state, now) end -- every rig gets physical checks before any planning allowance is spent
 	searches(now) -- route work runs after every rig has had its movement and sensing checks
-end)) -- movement effects and planning have each received their own bounded work
+end -- the next pass requires this same live owner and another engine tick
+running = false -- callbacks still reachable after an ordinary move cannot revive this controller
+pause() -- live context shutdown retires rigs before owned instances leave
+for _, connection in connections do connection:Disconnect() end -- the ready and phase adapters cannot retain the retired state
+script:ClearAllChildren() -- these children were created by this controller and contain only its runtime resources

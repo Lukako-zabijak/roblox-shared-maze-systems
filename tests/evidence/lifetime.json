@@ -1,0 +1,37 @@
+{
+  "issuer": "Codex native StudioTestService final active-motion lifecycle test",
+  "client_date": "2026-10-12",
+  "source_sha256": "3b15bf25b55379a30582512eed1ba1391b2e0022b1692d58e0a56ac5c106455f",
+  "place": 113425488924507,
+  "result": {
+    "cases": {
+      "live": {
+        "ownedchildren": 0,
+        "unchanged": 15,
+        "offline": 15,
+        "stopped": 15,
+        "resources": 0,
+        "moving": 0
+      },
+      "destroyed": {
+        "ownedchildren": 0,
+        "unchanged": 15,
+        "offline": 0,
+        "stopped": 0,
+        "resources": 0,
+        "moving": 0
+      },
+      "detached": {
+        "ownedchildren": 33,
+        "unchanged": 15,
+        "offline": 0,
+        "stopped": 0,
+        "resources": 0,
+        "moving": 0
+      }
+    },
+    "ok": true
+  },
+  "measurement": "Each case requires two rigs moving horizontally faster than one stud per second before shutdown. Post-shutdown horizontal speed must be below 0.15; no active owned resources may remain; all 15 original rotation values must be unchanged.",
+  "limitations": "A deliberately retained detached Script still owns its inactive children until it is destroyed. Hard owner loss keeps cached attributes as the last snapshot, as explicitly accepted by the user."
+}

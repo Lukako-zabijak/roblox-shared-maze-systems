@@ -1,0 +1,7 @@
+{
+  "issuer": "Codex standalone Luau 0.742 reachability model test",
+  "client_date": "2026-10-12",
+  "source_sha256": "3b15bf25b55379a30582512eed1ba1391b2e0022b1692d58e0a56ac5c106455f",
+  "output": "reachability=7382\n",
+  "limitations": "Seeded rectangular maps and an independent queue traversal test the pure mode; engine startup and spawn parity still need verification"
+}

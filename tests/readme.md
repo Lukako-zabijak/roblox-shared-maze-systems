@@ -1,38 +1,24 @@
 # Run the checks
 
-From the repository root, run `python "tests/build tests.py"`. The builder extracts the current production functions and writes ignored files under `tests/generated`; it fails if its source boundaries change
+From the repository root run `python "tests/build tests.py"`, then run these with the standalone Luau interpreter on PATH
 
-With the standalone Luau interpreter on PATH, run `luau "tests/generated/search tests.luau"`. Expected output is `baseline=960 additional=1182 dispatches=11`; elapsed-time slicing can change the dispatch count on a slower machine
-
-The baseline compares returned paths with an independent exhaustive shortest-path search on 100 small maps. The added assertions check immutable snapshots, sliced costs, charged pops, expired deadlines, all 15 queued agents receiving work, generation cancellation, route compatibility and an actual open/closed passage comparison
-
-The command-line fixture uses a deterministic PRNG substitute and mock attribute adapters. It does not run Roblox physics, client delivery or controller startup
-
-## Studio fixtures
-
-Import `tests/generated/core tests.luau` as a ModuleScript in ServerStorage of a blank baseplate and require a fresh clone in Edit mode. This version uses Roblox Random, so the assertion count depends on the generated maps and differs from the command-line substitute
-
-Import `tests/generated/turning tests.luau` as a ModuleScript named `turningtests`. Start Play and run the following in the Server Command Bar
-
-```luau
--- Connected Discord-GitHub
--- Made by LukakoZabijak (lukakozabijak) on Discord, YieldForever on Roblox.
-local module = game.ServerStorage.turningtests:Clone()
-module.Parent = game.ServerStorage
-local ok, result = pcall(require, module)
-module:Destroy()
-assert(ok, result)
-print("turningtests", result)
+```text
+luau "tests/generated/search tests.luau"
+luau "tests/generated/reachability tests.luau"
 ```
 
-The turning fixture has 23 assertions covering real network ownership, constraint settings, horizontal and near-zero goals, shared methods, separate route storage, repeated setup, missing owned objects, true/false restoration, ownership denial and model destruction. The anchored-root denial intentionally emits a warning. Its isolated fixture is removed after success or failure; remove imported test modules before saving or publishing
+Expected outputs are `baseline=960 additional=1182 dispatches=11` and `reachability=7382`. Deadline-based scheduling can change the dispatch count and its associated assertion count on a slower machine. Generated files are ignored and extracted from the current main source
 
-## Recorded integration evidence
+The baseline uses an independent exhaustive shortest-path reference. Additional search assertions cover immutable snapshots, charged pops, sliced costs, deadlines, fairness, generations, compatibility and the open/closed passage comparison. Reachability uses independent queue traversal on seeded rectangular maps. The command-line suite uses a fixed PRNG substitute and mock attribute adapters; it does not simulate Roblox physics
 
-[Cycle evidence](evidence/cycle.json) records one complete run on copied version-49 assets: 15 arrivals, zero stopped rigs, eight ordered collapse lifetimes, 96 chunks, 144 fragments, 630 probe dots and a 31-to-19 shortcut, followed by replay startup
+## Recorded engine runs
 
-[Multiplayer evidence](evidence/multiplayer.json) records two real clients seeing the rigs, upright turning, three probe colors, HUD and camera. Controller destruction during an active collapse and ancestry removal each left zero owned turning pairs, attachments, dots, debris, guardians or registry records and restored all 15 humanoids. A test-only setup variant checked mixed saved rotation values
+[Cycle evidence](evidence/cycle.json) records startup from ServerScriptService on copied version-49 assets, all 15 arrivals, eight ordered collapses, 96 chunks, 144 fragments, 630 dots and a physically crossed 31-to-19 shortcut, then replay startup. Both clients observed upright rigs, probe colors, HUD and camera. Exactly one server controller ran in the fixture
 
-[Source equivalence](evidence/source%20equivalence.json) records five later comment corrections with identical executable text and compiled bytes. The final source SHA identifies the submitted version; runtime SHA fields identify the tested snapshot. These JSON records describe observed integration runs, not results automatically reproduced by the unit builder
+[Lifetime evidence](evidence/lifetime.json) requires two rigs moving horizontally faster than one stud per second before each live, detached and destroyed shutdown case. Active world resources disappeared, horizontal velocity fell below the test tolerance and all 15 original rotation values stayed unchanged. Live shutdown published stopped/offline states. Unexpected owner loss kept the last cached attributes; an explicitly held detached Script kept inactive children until destroyed
 
-Full walking, phase effects, replay and guardian teardown require a separate isolated game test. The repository does not contain the authored place assets or automatically publish them
+[Source review](evidence/source.json) identifies the exact source hash, layout and component-comment review. [Reachability evidence](evidence/reachability.json) records the independent pure-mode checks
+
+The actual test harnesses are [cycle server](cycle%20server.luau), [cycle client](cycle%20client.luau), [lifetime server](lifetime%20server.luau) and [lifetime client](lifetime%20client.luau). They require a temporary copied `candidatefixture`, copied HUD/camera, test event names and a disabled controller under ServerScriptService. The test source uses exactly three namespace substitutions to address the copied world and events. They are StudioTestService harnesses, not production scripts or automatic place importers. Full integration cannot be reproduced from this repository without the authored assets
+
+Remove test fixtures and harnesses after testing. The JSON records document observed runs; the unit builder does not rerun those engine tests or publish the place

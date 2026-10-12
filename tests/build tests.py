@@ -40,9 +40,6 @@ search += (tests / 'search prelude.luau').read_text(encoding='utf-8') + '\nlocal
 search += (tests / 'search tests.luau').read_text(encoding='utf-8')
 (output / 'search tests.luau').write_text(search, encoding='utf-8')
 
-attributes = section('local function attributes(', 'local function collisions(')
-turning = section('function agentmethods.stopturn(', 'local function cancel(')
-turning = header + 'local agentmethods = {}\nlocal agentmetatable = {__index = agentmethods}\n' + attributes + turning
-turning += (tests / 'turning tests.luau').read_text(encoding='utf-8')
-(output / 'turning tests.luau').write_text(turning, encoding='utf-8')
-print(f'Built core, search and turning tests in {output}')
+reachability = (tests / 'reachability tests.luau').read_text(encoding='utf-8')
+(output / 'reachability tests.luau').write_text(header + pure + reachability, encoding='utf-8')
+print(f'Built core, search and reachability tests in {output}')

@@ -1,0 +1,28 @@
+{
+  "issuer": "Codex complete source and component-comment review",
+  "client_date": "2026-10-12",
+  "source_sha256": "3b15bf25b55379a30582512eed1ba1391b2e0022b1692d58e0a56ac5c106455f",
+  "physical_lines": 985,
+  "code_lines": 960,
+  "blank_lines": 22,
+  "annotated_code_lines": 960,
+  "max_code_length": 148,
+  "repeated_notes_at_least_three": [],
+  "reviewed_components": [
+    "grid and heap invariants",
+    "optional destination and spawn reachability",
+    "rig setup and native ownership",
+    "probes and peer pulses",
+    "publish sensing and movement",
+    "route and crossing witnesses",
+    "fair scheduling and adoption",
+    "validated phases and footprints",
+    "physical releases landing and fading",
+    "replay readiness and lifecycle"
+  ],
+  "limitations": [
+    "Compilation and runtime evidence are recorded separately",
+    "The accepted hard-destruction boundary leaves cached status attributes as the last snapshot",
+    "Source review does not establish application acceptance or account linkage"
+  ]
+}
