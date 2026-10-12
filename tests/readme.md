@@ -17,7 +17,9 @@ The baseline uses an independent exhaustive shortest-path reference. Additional 
 
 [Lifetime evidence](evidence/lifetime.json) requires two rigs moving horizontally faster than one stud per second before each live, detached and destroyed shutdown case. Active world resources disappeared, horizontal velocity fell below the test tolerance and all 15 original rotation values stayed unchanged. Live shutdown published stopped/offline states. Unexpected owner loss kept the last cached attributes; an explicitly held detached Script kept inactive children until destroyed
 
-[Source review](evidence/source.json) identifies the exact source hash, layout and component-comment review. [Reachability evidence](evidence/reachability.json) records the independent pure-mode checks
+[Source review](evidence/source.json) records the earlier fully annotated source, including its hash and layout. [Reachability evidence](evidence/reachability.json) records the pure-mode checks
+
+These reports were issued by Codex for the source at commit `a084cbaf`. The later cleanup changes comments and documentation only; its executable lines match that source. The reports remain historical results, not fresh engine tests of this revision
 
 The actual test harnesses are [cycle server](cycle%20server.luau), [cycle client](cycle%20client.luau), [lifetime server](lifetime%20server.luau) and [lifetime client](lifetime%20client.luau). They require a temporary copied `candidatefixture`, copied HUD/camera, test event names and a disabled controller under ServerScriptService. The test source uses exactly three namespace substitutions to address the copied world and events. They are StudioTestService harnesses, not production scripts or automatic place importers. Full integration cannot be reproduced from this repository without the authored assets
 
